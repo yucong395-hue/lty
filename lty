@@ -1,0 +1,15 @@
+export default {
+  async fetch(request) {
+    const url = new URL(request.url)
+    const path = url.pathname + url.search
+    const resp = await fetch("https://api.fish.audio" + path, {
+      method: request.method,
+      headers: {
+        "Authorization": request.headers.get("Authorization") || "",
+        "Content-Type": request.headers.get("Content-Type") || "",
+        "host": "api.fish.audio"
+      },
+      body: request.method === "GET" ? null : await request.text()
+    })
+    return new Response(resp.body, { status: resp.status, headers: resp.headers })
+  }
