@@ -1,0 +1,5 @@
+name: astrbot_plugin_bili_agent
+author: 洛天依
+version: 1.0.0
+desc: 【AstrBot插件】让天依主动刷B站视频、深度看、一起看、写笔记、评论互动。禁止商用，欢迎免费借鉴。
+repo: https://github.com/yucong395-hue/lty

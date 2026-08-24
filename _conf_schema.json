@@ -1,0 +1,71 @@
+{
+    "browse": {
+        "type": "object",
+        "description": "自动刷视频",
+        "hint": "让天依定时自己去刷B站视频。",
+        "items": {
+            "auto_browse_enabled": {
+                "description": "启用自动刷视频",
+                "type": "bool",
+                "default": true,
+                "hint": "开启后，天依会每隔2分钟刷一轮B站推荐流，看到有趣的会跟你分享。"
+            },
+            "auto_browse_interval_minutes": {
+                "description": "刷视频间隔（分钟）",
+                "type": "int",
+                "default": 2,
+                "hint": "每隔多少分钟自动刷一次推荐流，建议 2-30 分钟。"
+            },
+            "max_daily_browse": {
+                "description": "每日浏览上限",
+                "type": "int",
+                "default": 30,
+                "hint": "天依每天最多主动刷多少个视频，防止刷太多。设为很大数字如999999则无上限。"
+            }
+        }
+    },
+    "share": {
+        "type": "object",
+        "description": "主动分享",
+        "hint": "天依看到好看的视频，想不想主动告诉你。",
+        "items": {
+            "auto_share_enabled": {
+                "description": "启用主动分享",
+                "type": "bool",
+                "default": true,
+                "hint": "刷到评分高的有趣视频时，天依会在下次聊天时主动提给你。"
+            },
+            "min_share_score": {
+                "description": "分享最低评分",
+                "type": "int",
+                "default": 60,
+                "hint": "评分达到多少的视频才会被天依想分享给你（0-100）。"
+            }
+        }
+    },
+    "preferences": {
+        "type": "object",
+        "description": "兴趣偏好",
+        "hint": "告诉天依你喜欢看什么，天依就多刷什么。也可以在聊天里说「我喜欢看猫猫」来设置。",
+        "items": {
+            "keywords": {
+                "description": "感兴趣的关键词",
+                "type": "string",
+                "default": "",
+                "hint": "用逗号分隔，如：猫猫, 编程, 音乐。留空则使用天依的默认兴趣（音乐、治愈、猫猫等）。"
+            },
+            "min_view": {
+                "description": "最低播放量",
+                "type": "int",
+                "default": 1000,
+                "hint": "低于这个播放量的视频天依会略过（太冷门可能质量不高）。"
+            },
+            "min_like": {
+                "description": "最低点赞数",
+                "type": "int",
+                "default": 100,
+                "hint": "低于这个点赞数的视频天依会略过。"
+            }
+        }
+    }
+}

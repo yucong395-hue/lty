@@ -1,0 +1,29 @@
+# 敏感数据 - 切勿提交
+cookies.json
+*.cookie
+*_credential*
+
+# 运行时数据
+browse_history.json
+pending_shares.json
+blocklist.json
+goodwill.json
+mood.json
+notes/
+data/
+__pycache__/
+*.pyc
+*.pyo
+
+# 调试文件
+/tmp/*.log
+*.log
+main.py.bak
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store
+# 运行时状态（评论去重、@去重）
+state.json

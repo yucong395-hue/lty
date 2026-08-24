@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>天依的B站小窝</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f7; color: #1d1d1f; padding: 20px; }
+.container { max-width: 800px; margin: 0 auto; }
+.header { text-align: center; padding: 30px 0; }
+.header h1 { font-size: 28px; font-weight: 600; background: linear-gradient(135deg, #fb7299, #00a1d6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.header p { color: #86868b; margin-top: 8px; font-size: 14px; }
+.stats { display: flex; gap: 12px; margin-bottom: 24px; }
+.stat-card { flex: 1; background: #fff; border-radius: 12px; padding: 16px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+.stat-card .num { font-size: 24px; font-weight: 600; color: #1d1d1f; }
+.stat-card .label { font-size: 12px; color: #86868b; margin-top: 4px; }
+.section { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+.section h2 { font-size: 16px; font-weight: 600; margin-bottom: 16px; color: #1d1d1f; }
+.video-item { display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid #f0f0f0; }
+.video-item:last-child { border-bottom: none; }
+.video-info { flex: 1; min-width: 0; }
+.video-title { font-size: 14px; font-weight: 500; color: #1d1d1f; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.video-meta { font-size: 12px; color: #86868b; }
+.video-meta span { margin-right: 12px; }
+.video-score { font-size: 12px; font-weight: 600; color: #fb7299; }
+.video-link { text-decoration: none; color: #00a1d6; font-size: 12px; }
+.empty-state { text-align: center; padding: 40px; color: #86868b; }
+.empty-state .icon { font-size: 40px; margin-bottom: 12px; }
+.loading { text-align: center; padding: 40px; color: #86868b; }
+.tag { display: inline-block; background: #f0f0f0; border-radius: 4px; padding: 2px 8px; font-size: 11px; color: #666; margin-right: 4px; }
+.login-banner { background: linear-gradient(135deg, #fb7299, #00a1d6); color: #fff; border-radius: 12px; padding: 16px 20px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; }
+.login-banner .text { font-size: 14px; }
+.login-banner .btn { background: #fff; color: #fb7299; border: none; border-radius: 8px; padding: 8px 16px; font-size: 13px; font-weight: 500; cursor: pointer; }
+#prefs { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+#prefs input { flex: 1; min-width: 150px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 8px 12px; font-size: 13px; }
+#prefs button { background: #00a1d6; color: #fff; border: none; border-radius: 8px; padding: 8px 16px; font-size: 13px; cursor: pointer; }
+@media (prefers-color-scheme: dark) {
+body { background: #1c1c1e; color: #f5f5f7; }
+.stat-card, .section { background: #2c2c2e; }
+.stat-card .num, .video-title { color: #f5f5f7; }
+.stat-card .label, .video-meta, .empty-state { color: #98989d; }
+.video-item { border-color: #38383a; }
+.tag { background: #38383a; color: #98989d; }
+#prefs input { background: #2c2c2e; border-color: #38383a; color: #f5f5f7; }
+#live-commentary { background: #2c2c2e; }
+.commentary-msg { background: #38383a !important; }
+#watch-bvid { background: #2c2c2e; border-color: #38383a; color: #f5f5f7; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+  <div style="text-align:right;margin-bottom:8px">
+    <button id="logout-btn" onclick="doClose()" style="background:none;border:1px solid #d2d2d7;border-radius:8px;padding:6px 14px;font-size:12px;cursor:pointer;color:#86868b;display:none">✕ 关闭</button>
+  </div>
+  <div style="text-align:center;margin-bottom:16px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+    <button class="tab-btn active" onclick="showTab('browse')" style="background:#00a1d6;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer">📚 浏览记录</button>
+    <button class="tab-btn" onclick="showTab('watch')" style="background:#fb7299;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer">🎬 一起看</button>
+    <button class="tab-btn" onclick="showTab('memory')" style="background:#34c759;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer">🧠 记忆库</button>
+  </div>
+
+    <h1>🎬 天依的B站小窝</h1>
+    <p>看看天依最近在刷什么～</p>
+  </div>
+
+  <div id="login-banner" class="login-banner" style="display:none">
+    <span class="text">还没登录B站哦，扫码让天依去刷视频吧～</span>
+    <button class="btn" onclick="window.location.href='/'">去登录</button>
+  </div>
+
+  <div class="stats">
+    <div class="stat-card"><div class="num" id="total-count">-</div><div class="label">已浏览</div></div>
+    <div class="stat-card"><div class="num" id="today-count">-</div><div class="label">今日新增</div></div>
+    <div class="stat-card"><div class="num" id="avg-score">-</div><div class="label">平均评分</div></div>
+  </div>
+
+  
+<!-- 一起看视频区域 -->
+<div id="watch-section" class="section" style="display:none">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <h2>🎬 和天依一起看</h2>
+    <button id="close-watch" style="background:none;border:none;font-size:20px;cursor:pointer;color:#86868b">✕</button>
+  </div>
+  <div id="video-player" style="width:100%;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden;margin-bottom:12px">
+    <iframe id="bili-player" width="100%" height="100%" src="" frameborder="0" allowfullscreen style="border-radius:8px"></iframe>
+  </div>
+  <div id="live-commentary" style="background:#f8f8f8;border-radius:8px;padding:12px;max-height:250px;overflow-y:auto;font-size:13px;line-height:1.6">
+    <div class="commentary-msg" style="color:#86868b">选择视频后，天依会在这里实时解说～</div>
+  </div>
+  <div style="margin-top:8px;display:flex;gap:8px">
+    <input id="watch-bvid" placeholder="输入BV号，如 BV1YFun6KEhz" style="flex:1;border:1px solid #d2d2d7;border-radius:8px;padding:8px 12px;font-size:13px"/>
+    <button id="watch-start" style="background:#fb7299;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer">开始看</button>
+  </div>
+</div>
+  <div id="memory-section" class="section" style="display:none">
+    <h2>🧠 天依的记忆库</h2>
+    <div id="memory-list" style="max-height:500px;overflow-y:auto"></div>
+    <div style="text-align:center;margin-top:12px">
+      <button onclick="loadMemory()" style="background:#34c759;color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:12px;cursor:pointer">🔄 刷新记忆</button>
+    </div>
+  </div>
+<div class="section">
+    <h2>🎯 兴趣偏好</h2>
+    <div id="prefs">
+      <input id="pref-input" placeholder="猫猫, 编程, 音乐..." />
+      <button onclick="savePrefs()">保存</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>📚 浏览记录</h2>
+    <div id="video-list">
+      <div class="loading">加载中...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Dashboard: /api/v1/plugins/extensions/... ; 独立服务器: 相对路径
+const API = window.location.pathname.startsWith('/api/') ? '/api/v1/plugins/extensions/astrbot_plugin_bili_agent/page' : '';
+
+async function loadData() {
+  try {
+    const [histRes, statusRes] = await Promise.all([
+      fetch(`${API}/history`),
+      fetch(`${API}/status`),
+    ]);
+    const hist = await histRes.json();
+    const status = await statusRes.json();
+
+    const videos = hist.data || [];
+    const s = status.data || {};
+
+    // 统计
+    document.getElementById('total-count').textContent = videos.length;
+    document.getElementById('today-count').textContent = s.todayCount || 0;
+
+    const scores = videos.filter(v => v.score).map(v => v.score);
+    const avg = scores.length ? Math.round(scores.reduce((a,b) => a+b, 0) / scores.length) : '-';
+    document.getElementById('avg-score').textContent = avg;
+
+    // 登录状态
+    const banner = document.getElementById('login-banner');
+    banner.style.display = s.loggedIn ? 'none' : 'flex';
+
+    // 兴趣偏好
+    if (s.keywords && s.keywords.length) {
+      document.getElementById('pref-input').value = s.keywords.join(', ');
+    }
+
+    // 视频列表
+    const list = document.getElementById('video-list');
+    if (!videos.length) {
+      list.innerHTML = '<div class="empty-state"><div class="icon">🎬</div><p>天依还没刷过视频呢～</p></div>';
+      return;
+    }
+
+    list.innerHTML = videos.reverse().map(v => {
+      const stars = '⭐'.repeat(Math.min(Math.floor((v.score || 0) / 25) + 1, 4));
+      return `<div class="video-item">
+        <div class="video-info">
+          <div class="video-title">${v.title || '未知标题'}</div>
+          <div class="video-meta">
+            <span>👤 ${v.author || '未知'}</span>
+            <span>▶️ ${(v.view || 0).toLocaleString()}</span>
+            <span>👍 ${(v.like || 0).toLocaleString()}</span>
+            ${v.category ? `<span class="tag">${v.category}</span>` : ''}
+            <span class="video-score">${stars}</span>
+          </div>
+          <div style="margin-top:4px">
+            <a class="video-link" href="https://www.bilibili.com/video/${v.bvid}" target="_blank">🔗 去看视频</a>
+            <span style="color:#86868b;font-size:11px;margin-left:12px">${v.time ? new Date(v.time).toLocaleString() : ''}</span>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    document.getElementById('video-list').innerHTML = `<div class="empty-state"><p>加载失败: ${e.message}</p></div>`;
+  }
+}
+
+async function savePrefs() {
+  const val = document.getElementById('pref-input').value;
+  try {
+    const res = await fetch(`${API}/prefs`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({keywords: val})
+    });
+    const data = await res.json();
+    alert(data.message || '已保存');
+  } catch(e) {
+    alert('保存失败: ' + e.message);
+  }
+}
+
+loadData();
+setInterval(loadData, 30000);
+
+function showTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.style.opacity = '0.6');
+  document.getElementById('video-list').style.display = 'none';
+  document.getElementById('watch-section').style.display = 'none';
+  document.getElementById('memory-section').style.display = 'none';
+  if (tab === 'browse') {
+    document.getElementById('video-list').style.display = 'block';
+    document.querySelectorAll('.tab-btn')[0].style.opacity = '1';
+  } else if (tab === 'watch') {
+    document.getElementById('watch-section').style.display = 'block';
+    document.querySelectorAll('.tab-btn')[1].style.opacity = '1';
+  } else if (tab === 'memory') {
+    document.getElementById('memory-section').style.display = 'block';
+    document.querySelectorAll('.tab-btn')[2].style.opacity = '1';
+    loadMemory();
+  }
+}
+
+// 退出登录：仅在 Dashboard 模式下显示按钮
+(async function() {
+  const isDashboard = window.location.pathname.startsWith('/api/');
+  if (isDashboard) {
+    document.getElementById('logout-btn').style.display = 'inline-block';
+  }
+  // 始终显示"关闭"按钮（不是在 Dashboard 模式下也显示）
+  document.getElementById('logout-btn').style.display = 'inline-block';
+})();
+
+async function doClose() {
+  if (window.history.length > 1) {
+    window.history.back();
+  } else {
+    window.close();
+  }
+}
+
+// 加载记忆库
+async function loadMemory() {
+  const el = document.getElementById('memory-list');
+  el.innerHTML = '<div style="text-align:center;color:#86868b;padding:20px">加载中...</div>';
+  try {
+    const resp = await fetch(API + '/memory');
+    const data = await resp.json();
+    if (data.status === 'ok' && data.data.length > 0) {
+      let html = '';
+      data.data.forEach(v => {
+        const tags = v.tags ? v.tags.map(t => '<span style="background:#f0f0f0;border-radius:4px;padding:2px 6px;font-size:11px;margin:2px">#' + t + '</span>').join('') : '';
+        html += '<div style="padding:10px 0;border-bottom:1px solid #f0f0f0">';
+        html += '<div style="font-weight:500;font-size:14px">' + (v.title || '') + '</div>';
+        html += '<div style="color:#86868b;font-size:12px;margin-top:4px">👤 ' + (v.author || '') + ' 播放 ' + (v.view || 0) + ' 评分 ' + (v.score || 0) + '</div>';
+        if (v.summary) html += '<div style="color:#515154;font-size:12px;margin-top:4px">' + v.summary + '</div>';
+        if (tags) html += '<div style="margin-top:4px">' + tags + '</div>';
+        html += '</div>';
+      });
+      el.innerHTML = html;
+    } else {
+      el.innerHTML = '<div style="text-align:center;color:#86868b;padding:20px">天依还没看什么视频呢～</div>';
+    }
+  } catch(e) {
+    el.innerHTML = '<div style="text-align:center;color:#ff3b30;padding:20px">加载失败，检查插件是否已重启</div>';
+  }
+}
+
+// 一起看功能
+document.addEventListener('DOMContentLoaded', function() {
+  const startBtn = document.getElementById('watch-start');
+  const closeBtn = document.getElementById('close-watch');
+  const input = document.getElementById('watch-bvid');
+  const player = document.getElementById('bili-player');
+  const commentary = document.getElementById('live-commentary');
+  
+  startBtn.addEventListener('click', startWatch);
+  closeBtn.addEventListener('click', function() { showTab('browse'); });
+  input.addEventListener('keypress', function(e) { if (e.key === 'Enter') startWatch(); });
+  
+  async function startWatch() {
+    let bvid = input.value.trim();
+    // 从链接里提取 BV 号
+    const bvMatch = bvid.match(/BV[0-9A-Za-z]{10,}/);
+    if (bvMatch) bvid = bvMatch[0];
+    if (!bvid.startsWith('BV')) { alert('请输入BV号～'); return; }
+    
+    // 嵌入播放器
+    player.src = `https://player.bilibili.com/player.html?bvid=${bvid}&autoplay=1`;
+    commentary.innerHTML = '<div class="commentary-msg" style="color:#00a1d6">🎬 加载中，天依去拉弹幕和字幕～</div>';
+    
+    try {
+      // 获取视频信息
+      const res = await fetch(`${API}/commentary/${bvid}`);
+      const data = await res.json();
+      
+      if (data.status === 'ok') {
+        const info = data.data;
+        let html = '<div class="commentary-msg" style="font-weight:600;margin-bottom:8px">🎬 天依陪你一起看：' + info.title + '</div>';
+        html += '<div class="commentary-msg" style="color:#86868b;margin-bottom:8px">👤 ' + info.author + ' | ⏱ ' + info.duration + '</div>';
+        
+        if (info.sections && info.sections.length) {
+          html += '<div style="border-top:1px solid #eee;padding-top:8px;margin-top:8px">';
+          info.sections.forEach(s => {
+            html += '<div class="commentary-msg" style="margin:4px 0;padding:4px 8px;background:#fff;border-radius:4px">⏱ ' + s.time + ' ' + s.text + '</div>';
+          });
+          html += '</div>';
+        }
+        
+        if (info.danmaku && info.danmaku.length) {
+          html += '<div style="border-top:1px solid #eee;padding-top:8px;margin-top:8px">';
+          html += '<div style="color:#fb7299;font-weight:500;margin-bottom:4px">💬 弹幕亮点：</div>';
+          info.danmaku.forEach(d => {
+            html += '<div style="margin:2px 0;font-size:12px">· ' + d + '</div>';
+          });
+          html += '</div>';
+        }
+        
+        html += '<div style="border-top:1px solid #eee;padding-top:8px;margin-top:8px;color:#86868b;font-size:12px">看完可以跟天依聊聊感想哦～(๑•́ω•́๑)</div>';
+        commentary.innerHTML = html;
+      } else {
+        commentary.innerHTML = '<div class="commentary-msg" style="color:#ff6b6b">获取视频信息失败: ' + (data.message || '未知错误') + '</div>';
+      }
+    } catch(e) {
+      commentary.innerHTML = '<div class="commentary-msg" style="color:#ff6b6b">加载失败: ' + e.message + '</div>';
+    }
+  }
+});
+
+</script>
+</body>
+</html>
