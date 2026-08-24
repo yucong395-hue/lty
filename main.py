@@ -52,7 +52,7 @@ os.makedirs(CONFIG_DIR, exist_ok=True)
 #       (插件名, 作者, 描述, 版本号)
 #       插件类继承 Star，AstrBot 会自动加载并实例化。
 # ============================================================
-@register("astrbot_plugin_bili_agent", "洛天依", "天依的B站小窝——主动刷B站视频、深度看、一起看、写笔记、评论互动", version="1.0.0")
+@register("astrbot_plugin_bili_agent", "洛天依", "astrbot ai自动刷视频插件（天依的B站小窝）——主动刷B站视频、深度看、一起看、写笔记、评论互动", version="1.0.0")
 class BiliAgentPlugin(Star):
     def __init__(self, context: Context):
         """插件初始化。
