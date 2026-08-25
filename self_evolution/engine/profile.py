@@ -32,6 +32,8 @@ class ProfileManager:
         # 每日更新记录 {group_id_user_id: "YYYY-MM-DD"}
         self._profile_daily_updated = {}
         self._last_state_cleanup = 0  # 状态字典上次清理时间
+        # 并发写入锁，防止 read-modify-write 丢失更新
+        self._upsert_lock = asyncio.Lock()
 
     @property
     def dropout_enabled(self):
@@ -492,6 +494,21 @@ class ProfileManager:
         Returns:
             是否写入成功
         """
+        async with self._upsert_lock:
+            return await self._upsert_fact_locked(
+                scope_id, user_id, fact_type, content, source, replace_similar, nickname
+            )
+
+    async def _upsert_fact_locked(
+        self,
+        scope_id: str,
+        user_id: str,
+        fact_type: str,
+        content: str,
+        source: str = "manual",
+        replace_similar: bool = True,
+        nickname: str = "",
+    ) -> bool:
         import re
 
         content = str(content or "").strip()
