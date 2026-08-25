@@ -900,7 +900,13 @@ class EmotionalEchoPlugin(Star):
             logger.debug(f"[EmotionalEcho] 处理 profile_updated 事件异常: {e}")
 
     async def terminate(self):
-        logger.info("情感回响插件已卸载，记忆已保存在 SQLite")
+        logger.info("情感回响插件已卸载，清理事件总线注册…")
+        try:
+            event_bus.off("video_discovered", self._on_video_discovered)
+            event_bus.off("profile_updated", self._on_profile_updated)
+            logger.info("[EmotionalEcho] 已清理事件总线注册")
+        except Exception:
+            pass
 
 # ═══════════════════════════════════════════════════════════════
 # 小模型引擎：cnsenti 中文情感分析（本地，轻量，手机无压力）
