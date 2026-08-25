@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import random
+import sys
 import time
 from dataclasses import dataclass, field
 
@@ -77,6 +78,18 @@ from .engine.moderation_classifier import (
 from .engine.moderation_enforcer import enforce_moderation
 from .engine.moderation_executor import _is_bot_admin_in_group
 from .scheduler.register import register_tasks
+
+# 事件总线（跨插件联动）
+_EVO_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+_EVO_PLUGINS_DIR = os.path.dirname(_EVO_PLUGIN_DIR)
+if _EVO_PLUGINS_DIR not in sys.path:
+    sys.path.insert(0, _EVO_PLUGINS_DIR)
+try:
+    from event_bus import event_bus
+    _HAS_EVENT_BUS = True
+except ImportError:
+    _HAS_EVENT_BUS = False
+    logger.warning("[SelfEvolution] event_bus 不可用，跨插件联动将跳过")
 
 PROTECTED_TOOLS = frozenset(
     {
@@ -390,6 +403,14 @@ class SelfEvolutionPlugin(Star):
         self.san_system.initialize()
         self._load_prompts_injection()
 
+        # ── 事件总线：跨插件联动 ──
+        if _HAS_EVENT_BUS:
+            try:
+                event_bus.on("emotion_peak", self._on_emotion_peak)
+                logger.info("[SelfEvolution] 已注册 emotion_peak 事件监听")
+            except Exception as e:
+                logger.warning(f"[SelfEvolution] 事件总线注册失败: {e}")
+
     @filter.on_plugin_unloaded()
     async def on_plugin_unloaded(self, metadata):
         """
@@ -400,6 +421,95 @@ class SelfEvolutionPlugin(Star):
             logger.info("[SelfEvolution] 插件卸载钩子触发：DAO 长连接已安全释放。")
         except Exception as e:
             logger.warning(f"[SelfEvolution] 释放资源异常: {e}")
+
+    # ── 事件总线处理器：情感峰值 → 画像微调（③ 连通性加强） ──
+    async def _on_emotion_peak(self, event_name: str, data: dict):
+        """
+        监听 emotional_echo 的情感峰值事件，把情绪波动微调写入用户画像。
+        data 形如:
+        {
+          "user_id": "private_xxx" 或 "group_xxx_uid",
+          "scope_id": "private_xxx",
+          "emotion": "happy",
+          "text": "原话",
+          "weight": 0.8
+        }
+        """
+        try:
+            data = data or {}
+            user_id = data.get("user_id", "")
+            scope_id = data.get("scope_id", "")
+            emotion = data.get("emotion", "")
+            text = data.get("text", "")
+            weight = float(data.get("weight", 0.5) or 0.5)
+            if not user_id or not emotion or emotion == "neutral":
+                return
+
+            # scope_id 缺省时按私聊规则推导
+            if not scope_id:
+                scope_id = self._resolve_profile_scope_id(None, user_id)
+
+            # 提取 group_id 与真实 uid（兼容 group_xxx_uid / private_xxx 两种形态）
+            group_id = None
+            real_user_id = str(user_id)
+            if str(user_id).startswith("private_"):
+                real_user_id = str(user_id)[len("private_"):]
+            elif "_" in str(user_id):
+                group_id, _, real_user_id = str(user_id).partition("_")
+
+            if weight < 0.4:
+                return  # 弱情绪不打扰画像
+
+            # 情绪 → 人格特质描述
+            emo_trait_map = {
+                "happy": "情绪明亮，容易被小事治愈",
+                "sad": "情绪容易低落，需要被温柔接住",
+                "angry": "情绪来得快，需要被倾听和安抚",
+                "surprised": "对新鲜事反应热烈，好奇心强",
+                "tired": "最近比较疲惫，睡眠不足",
+                "fear": "安全感需求较强",
+                "anxious": "近期有焦虑情绪，需要陪伴",
+            }
+            trait_tpl = emo_trait_map.get(emotion)
+            if not trait_tpl:
+                return
+
+            # 写入画像（trait 类，带去重与覆盖）
+            await self.profile.upsert_fact(
+                scope_id=self._resolve_profile_scope_id(group_id, real_user_id),
+                user_id=str(real_user_id),
+                fact_type="trait",
+                content=trait_tpl,
+                source="emotion_peak",
+                replace_similar=True,
+            )
+
+            # 最近动态：记录一次情感峰值（保留上下文）
+            preview = (text or "")[:40].replace(chr(10), " ")
+            await self.profile.upsert_fact(
+                scope_id=self._resolve_profile_scope_id(group_id, real_user_id),
+                user_id=str(real_user_id),
+                fact_type="recent_update",
+                content=f"[{emotion}] {preview}",
+                source="emotion_peak",
+                replace_similar=True,
+            )
+            logger.info(f"[SelfEvolution] 情感峰值已写入画像: user={real_user_id} emotion={emotion} weight={weight}")
+
+            # ── 事件总线：画像已更新，通知其他插件（④ 加强） ──
+            try:
+                if _HAS_EVENT_BUS:
+                    event_bus.emit("profile_updated", {
+                        "user_id": real_user_id,
+                        "scope_id": scope_id,
+                        "emotion": emotion,
+                        "fact_type": "trait",
+                        "source": "emotion_peak",
+                    })
+            except Exception as e:
+                logger.debug(f"[SelfEvolution] 通知 profile_updated 失败: {e}")
+        except Exception as e:
+            logger.warning(f"[SelfEvolution] 处理 emotion_peak 事件异常: {e}")
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
