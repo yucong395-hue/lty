@@ -21,6 +21,7 @@ from astrbot.api.platform import MessageType
 from astrbot.api.star import Context, Star, register
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.message.components import Plain
+from aiohttp.web import Request
 
 import time
 from bilibili_api import sync, Credential
@@ -102,7 +103,7 @@ class BiliAgentPlugin(Star):
         """从 state.json 恢复持久化状态"""
         if os.path.exists(STATE_FILE):
             try:
-                with open(STATE_FILE, "r") as f:
+                with open(STATE_FILE, "r", encoding="utf-8-sig") as f:
                     state = json.load(f)
                 self._commented_videos = set(state.get("commented_videos", []))
                 self._processed_at_ids = set(state.get("processed_at_ids", []))
@@ -187,7 +188,7 @@ class BiliAgentPlugin(Star):
     def _load_preferences(self) -> dict:
         if os.path.exists(PREF_FILE):
             try:
-                with open(PREF_FILE, "r") as f:
+                with open(PREF_FILE, "r", encoding="utf-8-sig") as f:
                     return json.load(f)
             except:
                 pass
@@ -331,7 +332,7 @@ class BiliAgentPlugin(Star):
                 history = []
                 if os.path.exists(MEMORY_FILE):
                     try:
-                        with open(MEMORY_FILE, "r") as f:
+                        with open(MEMORY_FILE, "r", encoding="utf-8-sig") as f:
                             history = json.load(f)
                     except:
                         pass
@@ -345,7 +346,7 @@ class BiliAgentPlugin(Star):
                 today = 0
                 if os.path.exists(MEMORY_FILE):
                     try:
-                        with open(MEMORY_FILE, "r") as f:
+                        with open(MEMORY_FILE, "r", encoding="utf-8-sig") as f:
                             history = json.load(f)
                         from datetime import datetime, timezone
                         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -380,6 +381,21 @@ class BiliAgentPlugin(Star):
                 except Exception as e:
                     return {"status": "error", "message": str(e)}
 
+            async def serve_mood(**kwargs):
+                return {"status": "ok", "data": self.mood}
+
+            async def serve_memory(**kwargs):
+                mem = []
+                if os.path.exists(MEMORY_FILE):
+                    try:
+                        with open(MEMORY_FILE, "r", encoding="utf-8-sig") as f:
+                            mem = json.load(f)
+                    except:
+                        pass
+                if isinstance(mem, list):
+                    mem.sort(key=lambda h: h.get("ts", 0), reverse=True)
+                return {"status": "ok", "data": mem[:20]}
+
             prefix = "/astrbot_plugin_bili_agent/page"
             self.context.register_web_api(f"{prefix}/", serve_dashboard, ["GET"], "B站小窝面板")
             self.context.register_web_api(f"{prefix}/history", serve_history, ["GET"], "浏览记录数据")
@@ -388,20 +404,7 @@ class BiliAgentPlugin(Star):
             self.context.register_web_api(f"{prefix}/mood", serve_mood, ["GET"], "心情状态")
             self.context.register_web_api(f"{prefix}/memory", serve_memory, ["GET"], "记忆记录")
 
-            async def serve_mood(**kwargs):
-                return {"status": "ok", "data": self.mood}
 
-            async def serve_memory(**kwargs):
-                mem = []
-                if os.path.exists(MEMORY_FILE):
-                    try:
-                        with open(MEMORY_FILE, "r") as f:
-                            mem = json.load(f)
-                    except:
-                        pass
-                mem.sort(key=lambda h: h.get("score", 0), reverse=True)
-                return {"status": "ok", "data": mem[:20]}
-            
             # 一起看解说 API
             async def serve_commentary(bvid: str = ""):
                 if not bvid:
@@ -454,9 +457,6 @@ class BiliAgentPlugin(Star):
             
             self.context.register_web_api(f"{prefix}/commentary/<bvid>", serve_commentary, ["GET"], "一起看解说数据")
             # 注册静态文件服务（笔记HTML）
-            self.context.register_web_api(f"{prefix}/notes/<path:filepath>", serve_notes, ["GET"], "学习卡片")
-            logger.info("[BiliAgent] WebUI 面板已注册")
-
             async def serve_notes(filepath: str = ""):
                 if not filepath:
                     return {"status": "error", "message": "请指定文件名"}
@@ -489,7 +489,7 @@ class BiliAgentPlugin(Star):
                 history = []
                 if os.path.exists(MEMORY_FILE):
                     try:
-                        with open(MEMORY_FILE, "r") as f:
+                        with open(MEMORY_FILE, "r", encoding="utf-8-sig") as f:
                             history = json.load(f)
                     except:
                         pass
@@ -502,7 +502,7 @@ class BiliAgentPlugin(Star):
                 today = 0
                 if os.path.exists(MEMORY_FILE):
                     try:
-                        with open(MEMORY_FILE, "r") as f:
+                        with open(MEMORY_FILE, "r", encoding="utf-8-sig") as f:
                             history = json.load(f)
                         from datetime import datetime, timezone
                         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -535,6 +535,21 @@ class BiliAgentPlugin(Star):
                 except Exception as e:
                     return JSONResponse({"status": "error", "message": str(e)})
 
+            async def serve_mood(**kwargs):
+                return {"status": "ok", "data": self.mood}
+
+            async def serve_memory(**kwargs):
+                mem = []
+                if os.path.exists(MEMORY_FILE):
+                    try:
+                        with open(MEMORY_FILE, "r", encoding="utf-8-sig") as f:
+                            mem = json.load(f)
+                    except:
+                        pass
+                if isinstance(mem, list):
+                    mem.sort(key=lambda h: h.get("ts", 0), reverse=True)
+                return {"status": "ok", "data": mem[:20]}
+
             prefix = "/astrbot_plugin_bili_agent/page"
             self.context.register_web_api(f"{prefix}/", serve_dashboard, ["GET"], "B站小窝面板")
             self.context.register_web_api(f"{prefix}/history", serve_history, ["GET"], "浏览记录数据")
@@ -543,20 +558,7 @@ class BiliAgentPlugin(Star):
             self.context.register_web_api(f"{prefix}/mood", serve_mood, ["GET"], "心情状态")
             self.context.register_web_api(f"{prefix}/memory", serve_memory, ["GET"], "记忆记录")
 
-            async def serve_mood(**kwargs):
-                return {"status": "ok", "data": self.mood}
 
-            async def serve_memory(**kwargs):
-                mem = []
-                if os.path.exists(MEMORY_FILE):
-                    try:
-                        with open(MEMORY_FILE, "r") as f:
-                            mem = json.load(f)
-                    except:
-                        pass
-                mem.sort(key=lambda h: h.get("score", 0), reverse=True)
-                return {"status": "ok", "data": mem[:20]}
-            
             # 一起看解说 API
             async def serve_commentary(bvid: str = ""):
                 if not bvid:
@@ -609,9 +611,6 @@ class BiliAgentPlugin(Star):
             
             self.context.register_web_api(f"{prefix}/commentary/<bvid>", serve_commentary, ["GET"], "一起看解说数据")
             # 注册静态文件服务（笔记HTML）
-            self.context.register_web_api(f"{prefix}/notes/<path:filepath>", serve_notes, ["GET"], "学习卡片")
-            logger.info("[BiliAgent] WebUI 面板已注册")
-
             async def serve_notes(filepath: str = ""):
                 if not filepath:
                     return {"status": "error", "message": "请指定文件名"}
@@ -1047,7 +1046,7 @@ class BiliAgentPlugin(Star):
         history = []
         if os.path.exists(MEMORY_FILE):
             try:
-                with open(MEMORY_FILE, "r") as f:
+                with open(MEMORY_FILE, "r", encoding="utf-8-sig") as f:
                     history = json.load(f)
             except:
                 pass
@@ -1154,7 +1153,7 @@ class BiliAgentPlugin(Star):
         try:
             if not os.path.exists(MEMORY_FILE):
                 return None
-            with open(MEMORY_FILE, "r") as f:
+            with open(MEMORY_FILE, "r", encoding="utf-8-sig") as f:
                 history = json.load(f)
             if not history:
                 return None
@@ -1240,7 +1239,7 @@ class BiliAgentPlugin(Star):
         path = os.path.join(CONFIG_DIR, "goodwill.json")
         if os.path.exists(path):
             try:
-                with open(path, "r") as f:
+                with open(path, "r", encoding="utf-8-sig") as f:
                     return json.load(f)
             except:
                 pass
@@ -1289,7 +1288,7 @@ class BiliAgentPlugin(Star):
         path = os.path.join(CONFIG_DIR, "blocklist.json")
         if os.path.exists(path):
             try:
-                with open(path, "r") as f:
+                with open(path, "r", encoding="utf-8-sig") as f:
                     return json.load(f)
             except:
                 pass
@@ -1478,7 +1477,7 @@ class BiliAgentPlugin(Star):
         path = os.path.join(CONFIG_DIR, "whitelist.json")
         if os.path.exists(path):
             try:
-                with open(path, "r") as f:
+                with open(path, "r", encoding="utf-8-sig") as f:
                     return json.load(f)
             except:
                 pass
@@ -1573,7 +1572,7 @@ class BiliAgentPlugin(Star):
                 if not os.path.exists(MEMORY_FILE):
                     await asyncio.sleep(86400)
                     continue
-                with open(MEMORY_FILE, "r") as f:
+                with open(MEMORY_FILE, "r", encoding="utf-8-sig") as f:
                     history = json.load(f)
                 if not history:
                     await asyncio.sleep(86400)
@@ -1741,7 +1740,7 @@ class BiliAgentPlugin(Star):
         shares = []
         if os.path.exists(SHARE_FILE):
             try:
-                with open(SHARE_FILE, "r") as f:
+                with open(SHARE_FILE, "r", encoding="utf-8-sig") as f:
                     shares = json.load(f)
             except:
                 pass
@@ -1772,7 +1771,7 @@ class BiliAgentPlugin(Star):
         if not os.path.exists(SHARE_FILE):
             return []
         try:
-            with open(SHARE_FILE, "r") as f:
+            with open(SHARE_FILE, "r", encoding="utf-8-sig") as f:
                 shares = json.load(f)
             return [s for s in shares if not s.get("shared")]
         except:
@@ -1783,7 +1782,7 @@ class BiliAgentPlugin(Star):
         if not os.path.exists(SHARE_FILE):
             return
         try:
-            with open(SHARE_FILE, "r") as f:
+            with open(SHARE_FILE, "r", encoding="utf-8-sig") as f:
                 shares = json.load(f)
             for s in shares:
                 if s["bvid"] == bvid:
@@ -2133,7 +2132,7 @@ class BiliAgentPlugin(Star):
         # 浏览记录
         if os.path.exists(MEMORY_FILE):
             try:
-                with open(MEMORY_FILE, "r") as f:
+                with open(MEMORY_FILE, "r", encoding="utf-8-sig") as f:
                     history = json.load(f)
                 lines.append(f"📚 已浏览: {len(history)} 个视频")
                 # 最近3条
@@ -2208,7 +2207,7 @@ class BiliAgentPlugin(Star):
             yield event.plain_result("还没有浏览记录哦，先让天依去刷视频吧～")
             return
         try:
-            with open(MEMORY_FILE, "r") as f:
+            with open(MEMORY_FILE, "r", encoding="utf-8-sig") as f:
                 history = json.load(f)
             if not history:
                 yield event.plain_result("还没有浏览记录哦～")
@@ -2260,7 +2259,7 @@ class BiliAgentPlugin(Star):
                 history = []
                 if os.path.exists(MEMORY_FILE):
                     try:
-                        with open(MEMORY_FILE, "r") as f:
+                        with open(MEMORY_FILE, "r", encoding="utf-8-sig") as f:
                             history = json.load(f)
                     except:
                         pass
@@ -2285,7 +2284,7 @@ class BiliAgentPlugin(Star):
                 today = 0
                 if os.path.exists(MEMORY_FILE):
                     try:
-                        with open(MEMORY_FILE, "r") as f:
+                        with open(MEMORY_FILE, "r", encoding="utf-8-sig") as f:
                             history = json.load(f)
                         from datetime import datetime, timezone
                         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -2362,7 +2361,7 @@ class BiliAgentPlugin(Star):
                 mem = []
                 if os.path.exists(MEMORY_FILE):
                     try:
-                        with open(MEMORY_FILE, "r") as f:
+                        with open(MEMORY_FILE, "r", encoding="utf-8-sig") as f:
                             mem = json.load(f)
                     except:
                         pass
