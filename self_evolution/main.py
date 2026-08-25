@@ -461,17 +461,25 @@ class SelfEvolutionPlugin(Star):
                 return
             self._emotion_peak_cooldown[user_id] = now
 
-            # scope_id 缺省时按私聊规则推导
-            if not scope_id:
-                scope_id = self._resolve_profile_scope_id(None, user_id)
-
-            # 提取 group_id 与真实 uid（兼容 group_xxx_uid / private_xxx 两种形态）
-            group_id = None
-            real_user_id = str(user_id)
-            if str(user_id).startswith("private_"):
-                real_user_id = str(user_id)[len("private_"):]
-            elif "_" in str(user_id):
-                group_id, _, real_user_id = str(user_id).partition("_")
+            # 优先用 sender_id + group_id（标准解析，对齐正常会话逻辑）
+            sender_id = data.get("sender_id", "") or ""
+            group_id = data.get("group_id") or None
+            if sender_id and group_id:
+                real_user_id = sender_id
+                scope_id = self._resolve_profile_scope_id(group_id, sender_id)
+            elif sender_id:
+                real_user_id = sender_id
+                scope_id = self._resolve_profile_scope_id(None, sender_id)
+            else:
+                # 兼容旧数据：从 unified_msg_origin 解析
+                if not scope_id:
+                    scope_id = self._resolve_profile_scope_id(None, user_id)
+                real_user_id = str(user_id)
+                if str(user_id).startswith("private_"):
+                    real_user_id = str(user_id)[len("private_"):]
+                elif "_" in str(user_id):
+                    parsed_group, _, real_user_id = str(user_id).partition("_")
+                    group_id = parsed_group
 
             if weight < 0.4:
                 return  # 弱情绪不打扰画像
