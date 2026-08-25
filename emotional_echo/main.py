@@ -502,6 +502,10 @@ class EmotionalEchoPlugin(Star):
         self.trigger = TriggerDetector()
         self.trigger.cooldown_seconds = self.trigger_cooldown
         self.echo_enabled = config.get("enabled", True) if config else True
+        # ⑤ 温柔度自适应配置
+        self.trend_days = int(config.get("trend_days", 7) if config else 7)
+        self.gentle_mode_enabled = config.get("gentle_mode_enabled", True) if config else True
+        self.gentle_threshold = float(config.get("gentle_threshold", 0.5) if config else 0.5)
 
         # ── 事件总线：跨插件联动 ──
         try:
@@ -589,12 +593,13 @@ class EmotionalEchoPlugin(Star):
         state = self.store.get_state(user_id)
 
         # 近期情绪趋势（温柔度自适应，⑤ 加强）
-        trend = self.store.get_emotion_trend(user_id, days=7)
+        trend = self.store.get_emotion_trend(user_id, days=self.trend_days)
 
         # 趋势感知的频道微调：若近期整体偏低落，即使此刻是自然情绪也轻柔一些
         channel_name = CHANNELS[state['channel']]['name']
         channel_prompt = self.engine.channel_prompt(user_id)
-        if state['channel'] == "natural" and trend["suggestion"] == "温柔":
+        if (self.gentle_mode_enabled and state['channel'] == "natural"
+                and trend["suggestion"] == "温柔"):
             channel_prompt = "语气轻柔简短，像深夜的轻轻一叹，不打扰"
 
         parts = [
@@ -604,11 +609,11 @@ class EmotionalEchoPlugin(Star):
             f"已陪伴对话 {state['interaction_count']} 次",
         ]
 
-        # 近期情绪趋势洞察（近7天）
+        # 近期情绪趋势洞察
         if trend["total"] >= 3:
             emo_desc = "、".join(f"{k}×{v}" for k, v in trend["emotions"].items())
-            trend_part = f"近7天用户情绪分布：{emo_desc}"
-            if trend["neg_ratio"] > 0.5:
+            trend_part = f"近{self.trend_days}天用户情绪分布：{emo_desc}"
+            if trend["neg_ratio"] > self.gentle_threshold:
                 trend_part += "（近期偏低落，回应请更温柔耐心）"
             elif trend["pos_ratio"] > 0.5:
                 trend_part += "（近期较多开心时刻，可多陪ta一起开心）"
