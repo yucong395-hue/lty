@@ -102,6 +102,12 @@
                 "default": true,
                 "hint": "AI 回复时是否注入结构化画像摘要。（影响记忆读取）"
             },
+            "enable_emotion_peak_profile": {
+                "description": "情绪波动写入画像",
+                "type": "bool",
+                "default": true,
+                "hint": "接收 emotional_echo 的情绪峰值事件，把情绪波动微调写入用户画像。关闭后情绪联动写画将停用。"
+            },
             "enable_profile_fact_writeback": {
                 "description": "写回新事实",
                 "type": "bool",
