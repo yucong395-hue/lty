@@ -1077,6 +1077,12 @@ class BiliAgentPlugin(Star):
         """智能兴趣引擎：关键词 + 同义词 + 排除词 + 多维度评分"""
         if not info:
             return False
+        # 检查 mood_boost 是否过期，过期了自动清掉再匹配
+        now_ts = time.time()
+        expire_ts = self.preferences.get("mood_boost_expire", 0)
+        if now_ts > expire_ts and self.preferences.get("mood_boost"):
+            self.preferences["mood_boost"] = []
+            self._save_preferences()
         prefs = self.preferences
         text = (info.get("title", "") + info.get("desc", "") + info.get("tname", "")).lower()
 
