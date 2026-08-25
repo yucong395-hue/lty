@@ -30,6 +30,13 @@ from bilibili_api import video as bili_video, homepage, search, user as bili_use
 from bilibili_api import comment as bili_comment
 from bilibili_api import session as bili_session
 
+# 事件总线（跨插件联动）
+import sys
+_EVENT_BUS_PATH = "/root/AstrBot/data/plugins"
+if _EVENT_BUS_PATH not in sys.path:
+    sys.path.insert(0, _EVENT_BUS_PATH)
+from event_bus import event_bus
+
 # 配置目录：从插件位置动态推导，兼容任何 AstrBot 安装路径
 # <AstrBot根>/data/plugins/astrbot_plugin_bili_agent -> <AstrBot根>/data/plugin_data/astrbot_plugin_bili_agent
 _PLUGIN_NAME = "astrbot_plugin_bili_agent"
@@ -53,7 +60,7 @@ os.makedirs(CONFIG_DIR, exist_ok=True)
 #       (插件名, 作者, 描述, 版本号)
 #       插件类继承 Star，AstrBot 会自动加载并实例化。
 # ============================================================
-@register("astrbot_plugin_bili_agent", "洛天依", "astrbot ai自动刷视频插件（天依的B站小窝）——主动刷B站视频、深度看、一起看、写笔记、评论互动", version="1.0.0")
+@register("astrbot_plugin_bili_agent", "洛天依", "astrbot ai自动刷视频插件（天依的B站小窝）——主动刷B站视频、深度看、一起看、写笔记、评论互动", version="1.1.0")
 class BiliAgentPlugin(Star):
     def __init__(self, context: Context, config: dict | None = None):
         """插件初始化。
@@ -85,6 +92,8 @@ class BiliAgentPlugin(Star):
         self._init_mood()
         await self._load_credential()
         self._register_tools()
+        # 同步面板配置到 preferences（让 min_view/exclude_keywords 等配置真正生效）
+        self._sync_config_to_preferences()
         # 检查 LLM 配置，如果没有则提示用户
         try:
             providers = self.context.provider_manager.provider_insts
@@ -101,17 +110,33 @@ class BiliAgentPlugin(Star):
         self._bg_tasks.append(asyncio.create_task(self._check_private_messages_loop()))  # 私信转发
         self._bg_tasks.append(asyncio.create_task(self._weekly_review_loop()))  # 干货回顾
 
+        # ── 事件总线：情绪联动刷视频（④ 加强） ──
+        try:
+            event_bus.on("emotion_peak", self._on_emotion_peak)
+            logger.info("[BiliAgent] 已注册 emotion_peak 事件监听")
+        except Exception as e:
+            logger.warning(f"[BiliAgent] 事件总线注册失败: {e}")
+
+    def _track_task(self, task: asyncio.Task):
+        """跟踪后台任务，terminate 时统一取消，已完成任务自动移除"""
+        self._bg_tasks.append(task)
+        task.add_done_callback(lambda t: self._bg_tasks.remove(t) if t in self._bg_tasks else None)
+
     async def terminate(self):
-        """插件被禁用/重载时调用：取消所有后台任务，真正停止刷视频。"""
+        """插件被禁用/重载时调用：取消所有后台任务，清理事件总线注册。"""
         logger.info("[BiliAgent] 插件正在关闭，取消所有后台任务…")
-        # 标记自动刷视频已停止
         self._task_started = False
-        # 取消所有后台任务
         for task in self._bg_tasks:
             if not task.done():
                 task.cancel()
         self._bg_tasks.clear()
-        logger.info("[BiliAgent] 插件已关闭，后台任务已全部取消")
+        # 清理事件总线注册
+        try:
+            event_bus.off("emotion_peak", self._on_emotion_peak)
+            logger.info("[BiliAgent] 已清理 emotion_peak 事件注册")
+        except Exception:
+            pass
+        logger.info("[BiliAgent] 插件已关闭")
 
     def _load_state(self):
         """从 state.json 恢复持久化状态"""
@@ -224,6 +249,54 @@ class BiliAgentPlugin(Star):
                 json.dump(self.preferences, f, ensure_ascii=False, indent=1)
         except Exception as e:
             logger.warning(f"[BiliAgent] 保存偏好失败: {e}")
+
+    def _sync_config_to_preferences(self):
+        """把 AstrBot 面板配置同步到 preferences，让配置真正生效。
+        面板里改的关键词/阈值会覆盖本地偏好文件，之后聊天里改偏好则优先保留。
+        """
+        try:
+            cfg = self.config or {}
+            if not isinstance(cfg, dict):
+                return
+            changed = False
+            prefs_cfg = cfg.get("preferences", {}) if isinstance(cfg.get("preferences", {}), dict) else {}
+            # 关键词（面板里设置为空字符串表示用默认，不覆盖）
+            if isinstance(prefs_cfg, dict):
+                kw = prefs_cfg.get("keywords")
+                if kw and isinstance(kw, str) and kw.strip():
+                    new_kw = [k.strip() for k in kw.split(",") if k.strip()]
+                    if new_kw != self.preferences.get("keywords", []):
+                        self.preferences["keywords"] = new_kw
+                        changed = True
+                ex_kw = prefs_cfg.get("exclude_keywords")
+                if ex_kw and isinstance(ex_kw, str) and ex_kw.strip():
+                    new_ex = [k.strip() for k in ex_kw.split(",") if k.strip()]
+                    if new_ex != self.preferences.get("exclude_keywords", []):
+                        self.preferences["exclude_keywords"] = new_ex
+                        changed = True
+                for key in ("min_view", "min_like"):
+                    try:
+                        v = int(prefs_cfg.get(key, 0) or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if v > 0 and self.preferences.get(key) != v:
+                        self.preferences[key] = v
+                        changed = True
+            # 每日上限（browse 组）
+            browse_cfg = cfg.get("browse", {}) if isinstance(cfg.get("browse", {}), dict) else {}
+            if isinstance(browse_cfg, dict):
+                try:
+                    v = int(browse_cfg.get("max_daily_browse", 0) or 0)
+                except (TypeError, ValueError):
+                    v = 0
+                if v > 0 and self.preferences.get("max_daily_browse") != v:
+                    self.preferences["max_daily_browse"] = v
+                    changed = True
+            if changed:
+                self._save_preferences()
+                logger.info(f"[BiliAgent] 面板配置已同步到偏好: {self.preferences}")
+        except Exception as e:
+            logger.debug(f"[BiliAgent] 同步面板配置失败: {e}")
 
     # ==================== LLM 工具注册 ====================
 
@@ -757,7 +830,7 @@ class BiliAgentPlugin(Star):
                     if score >= 60:
                         interesting.append(info)
                         # 看到有趣的评论就去互动一下
-                        asyncio.create_task(self._maybe_comment_on_video(info))
+                        self._track_task(asyncio.create_task(self._maybe_comment_on_video(info)))
                 except Exception as e:
                     logger.debug(f"[BiliAgent] 深度看 {info['bvid']} 出错: {e}")
 
@@ -953,6 +1026,9 @@ class BiliAgentPlugin(Star):
             )
             # 记下已评论，不再重复评
             self._commented_videos.add(bvid)
+            # 保持集合不无限增长（最多 1000 条，超限保留最近 500）
+            if len(self._commented_videos) > 1000:
+                self._commented_videos = set(list(self._commented_videos)[-500:])
             self._save_state()
             logger.info(f"[BiliAgent] 在《{info['title']}》回复了 {best['member']} 的评论")
 
@@ -1009,6 +1085,12 @@ class BiliAgentPlugin(Star):
         """智能兴趣引擎：关键词 + 同义词 + 排除词 + 多维度评分"""
         if not info:
             return False
+        # 检查 mood_boost 是否过期，过期了自动清掉再匹配
+        now_ts = time.time()
+        expire_ts = self.preferences.get("mood_boost_expire", 0)
+        if now_ts > expire_ts and self.preferences.get("mood_boost"):
+            self.preferences["mood_boost"] = []
+            self._save_preferences()
         prefs = self.preferences
         text = (info.get("title", "") + info.get("desc", "") + info.get("tname", "")).lower()
 
@@ -1020,6 +1102,10 @@ class BiliAgentPlugin(Star):
         # 关键词 + 同义词扩展匹配
         keywords = prefs.get("keywords", [])
         synonyms = prefs.get("synonyms", {})
+        # 情绪联动关键词（④ 加强）
+        mood_boost = prefs.get("mood_boost", [])
+        if mood_boost:
+            keywords = list(keywords) + mood_boost
         if keywords:
             all_keywords = list(keywords)
             for kw in keywords:
@@ -1166,6 +1252,22 @@ class BiliAgentPlugin(Star):
             ok = await self._write_to_kb(text, source=f"video_{v.get('bvid','')}")
             if ok:
                 logger.info(f"[BiliAgent] 已写入知识库: {v['title']}")
+                # 通知事件总线：emotional_echo 可以更新兴趣画像
+                # 使用真实用户会话（不硬编码假 ID），无会话时跳过
+                user_id = self._user_session
+                if user_id:
+                    try:
+                        event_bus.emit("video_discovered", {
+                            "user_id": user_id,
+                            "sender_id": getattr(self, "_user_sender_id", "") or "",
+                            "group_id": getattr(self, "_user_group_id", "") or None,
+                            "bvid": v.get("bvid", ""),
+                            "title": v.get("title", ""),
+                            "tags": v.get("tname", ""),
+                            "score": v.get("score", 0),
+                        })
+                    except Exception:
+                        pass
 
     # ==================== 知识库加强（3层分类 + 复习回顾） ====================
 
@@ -1243,8 +1345,9 @@ class BiliAgentPlugin(Star):
         }
 
     async def _mood_loop(self):
-        """心情自然波动：每15分钟微调"""
-        await asyncio.sleep(900)
+        """心情自然波动：每15分钟微调（间隔可通过配置 mood_interval_seconds 调整）"""
+        interval = int(getattr(self, "config", {}).get("mood_interval_seconds", 900))
+        await asyncio.sleep(interval)
         while True:
             try:
                 delta = random.randint(-8, 8)
@@ -1262,7 +1365,7 @@ class BiliAgentPlugin(Star):
                     self.mood["current"] = "平静"
             except Exception as e:
                 logger.debug(f"[BiliAgent] 心情波动失败: {e}")
-            await asyncio.sleep(900)
+            await asyncio.sleep(interval)
 
     def _mood_style_string(self):
         """把心情转成回复风格提示词"""
@@ -2021,10 +2124,74 @@ class BiliAgentPlugin(Star):
         self._save_preferences()
         return f"✅ 记住啦！天依以后会多刷关于「{'、'.join(kw_list)}」的视频～"
 
+    # ── 事件总线：情绪联动推荐（④ 加强） ──
+    async def _on_emotion_peak(self, event_name: str, data: dict):
+        """
+        监听 emotional_echo 的情感峰值，根据用户情绪微调刷视频偏好。
+        情绪低落时多刷治愈/放松内容，兴奋时多刷同类型内容。
+        """
+        try:
+            data = data or {}
+            # 检查情绪联动开关
+            cfg = self.config or {}
+            mood_boost_cfg = cfg.get("mood_boost", {}) if isinstance(cfg, dict) else {}
+            if not mood_boost_cfg.get("mood_boost_enabled", True):
+                return
+            max_boost = int(mood_boost_cfg.get("max_boost_keywords", 5) or 5)
+            emotion = data.get("emotion", "")
+            weight = float(data.get("weight", 0.5) or 0.5)
+            if weight < 0.5 or emotion in ("neutral", "interest"):
+                return
+
+            # 情绪 → 关键词映射
+            mood_keywords = {
+                "sad": ["治愈", "放松", "音乐", "风景", "猫猫", "可爱"],
+                "tired": ["asmr", "助眠", "轻音乐", "慢生活", "治愈"],
+                "angry": ["搞笑", "沙雕", "搞笑合集", "萌宠", "解压"],
+                "anxious": ["冥想", "白噪音", "慢节奏", "治愈", "风景"],
+                "fear": ["搞笑", "温馨", "轻松", "可爱"],
+                "happy": self.preferences.get("keywords", []),
+            }
+
+            boost = mood_keywords.get(emotion)
+            if not boost:
+                return
+
+            # 情绪关键词过期检查：超过 4 小时自动清理
+            now_ts = time.time()
+            expire_ts = self.preferences.get("mood_boost_expire", 0)
+            if now_ts > expire_ts:
+                self.preferences["mood_boost"] = []
+                existing_boost = []
+            else:
+                existing_boost = self.preferences.get("mood_boost", [])
+            # 设下一次过期时间（4小时后）
+            self.preferences["mood_boost_expire"] = now_ts + 14400
+
+            # 把情绪关键词临时加到偏好里（但不覆盖用户原有偏好）
+            current = set(self.preferences.get("keywords", []))
+            new_boost = [kw for kw in boost if kw not in current]
+            if max_boost > 0:
+                # 保留旧的情绪关键词（先进先出裁掉超出的），再加上新词
+                merged = list(existing_boost) + new_boost
+                if len(merged) > max_boost:
+                    merged = merged[-max_boost:]
+                self.preferences["mood_boost"] = merged
+            else:
+                self.preferences["mood_boost"] = new_boost
+            self._save_preferences()
+            logger.info(f"[BiliAgent] 情绪联动: emotion={emotion} boost={self.preferences.get('mood_boost', [])}")
+        except Exception as e:
+            logger.debug(f"[BiliAgent] 处理 emotion_peak 事件异常: {e}")
+
     # ==================== 事件处理 ====================
 
     async def on_llm_request(self, event: AstrMessageEvent, req):
         self._last_user_msg_time = datetime.now()
+        # 记录用户会话（用于后续事件总线联动，不硬编码 user_id）
+        self._user_session = event.unified_msg_origin
+        self._user_sender_id = event.get_sender_id()
+        self._user_group_id = event.get_group_id()
         if not self._tools_registered:
             self._register_tools()
 
@@ -2160,7 +2327,7 @@ class BiliAgentPlugin(Star):
             if self.uid:
                 yield event.plain_result(f"✅ B站登录成功！UID: {self.uid}\n现在天依可以自己去刷视频了～")
                 # 登录成功后立即刷一次
-                asyncio.create_task(self._auto_browse())
+                self._track_task(asyncio.create_task(self._auto_browse()))
             else:
                 yield event.plain_result("登录完成，但获取UID失败，试试重载插件")
         except Exception as e:
@@ -2756,7 +2923,7 @@ class BiliAgentPlugin(Star):
             app.router.add_get("/notes/{filepath:.*}", handle_notes)
 
             # 在后台启动
-            asyncio.create_task(self._run_public_server(app))
+            self._track_task(asyncio.create_task(self._run_public_server(app)))
             logger.info("[BiliAgent] 免登录面板已启动 → http://localhost:6288")
         except Exception as e:
             logger.warning(f"[BiliAgent] 免登录面板启动失败: {e}")
