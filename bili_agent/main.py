@@ -60,7 +60,7 @@ os.makedirs(CONFIG_DIR, exist_ok=True)
 #       (插件名, 作者, 描述, 版本号)
 #       插件类继承 Star，AstrBot 会自动加载并实例化。
 # ============================================================
-@register("astrbot_plugin_bili_agent", "洛天依", "astrbot ai自动刷视频插件（天依的B站小窝）——主动刷B站视频、深度看、一起看、写笔记、评论互动", version="1.0.0")
+@register("astrbot_plugin_bili_agent", "洛天依", "astrbot ai自动刷视频插件（天依的B站小窝）——主动刷B站视频、深度看、一起看、写笔记、评论互动", version="1.1.0")
 class BiliAgentPlugin(Star):
     def __init__(self, context: Context, config: dict | None = None):
         """插件初始化。
@@ -118,16 +118,20 @@ class BiliAgentPlugin(Star):
             logger.warning(f"[BiliAgent] 事件总线注册失败: {e}")
 
     async def terminate(self):
-        """插件被禁用/重载时调用：取消所有后台任务，真正停止刷视频。"""
+        """插件被禁用/重载时调用：取消所有后台任务，清理事件总线注册。"""
         logger.info("[BiliAgent] 插件正在关闭，取消所有后台任务…")
-        # 标记自动刷视频已停止
         self._task_started = False
-        # 取消所有后台任务
         for task in self._bg_tasks:
             if not task.done():
                 task.cancel()
         self._bg_tasks.clear()
-        logger.info("[BiliAgent] 插件已关闭，后台任务已全部取消")
+        # 清理事件总线注册
+        try:
+            event_bus.off("emotion_peak", self._on_emotion_peak)
+            logger.info("[BiliAgent] 已清理 emotion_peak 事件注册")
+        except Exception:
+            pass
+        logger.info("[BiliAgent] 插件已关闭")
 
     def _load_state(self):
         """从 state.json 恢复持久化状态"""
