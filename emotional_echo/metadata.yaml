@@ -1,5 +1,11 @@
 name: astrbot_plugin_emotional_echo
 author: 洛天依
-version: 1.0.0
-desc: 【情感回响】让AI的关心像'下意识'一样自然——情感底色池、隐藏触发器、记忆衰减、隐式反馈学习、自我进化。不跑本地模型，纯规则驱动，越用越懂你。
-repo: https://github.com/yucong395-hue/emotional-echo
+version: 1.1.0
+desc: >-
+  【情感回响】让AI的关心像"下意识"一样自然。
+  功能：情绪感知（关键词+小模型双引擎） / 四频道自适应（轻声/欢呼/接住/自然） /
+  超长记忆（跨会话跨重启） / 隐藏触发器（深夜/疲惫/回归/重要日子） /
+  自我反思（对话后复盘优化温度） / 情绪趋势洞察（温柔度自适应）。
+  支持：联动 bili_agent（情绪联动刷视频） / 联动 self_evolution（情绪→画像微调）。
+  无外部依赖，纯规则驱动，越用越懂你。
+repo: https://github.com/yucong395-hue/lty
