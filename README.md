@@ -52,6 +52,39 @@ CognitionCore 7.0 数字生命系统。
 
 将插件目录复制到 AstrBot 的 `data/plugins/` 下，重启或热重载即可。
 
+> 💡 **新手必看**：打开 [plugin_connectivity.html](plugin_connectivity.html) 查看一张图版连通指南！
+
+### 安装步骤（详细版）
+
+1. **下载仓库**：绿色 `Code` 按钮 → `Download ZIP`，或 `git clone https://github.com/yucong395-hue/lty.git`
+2. **放对位置**：把 `main.py`、`metadata.yaml`、`_conf_schema.json`、`requirements.txt` 等放进
+   `data/plugins/astrbot_plugin_bili_agent/`（目录名必须是 `astrbot_plugin_bili_agent`）
+   - emotional_echo → `data/plugins/astrbot_plugin_emotional_echo/`
+   - self_evolution → `data/plugins/astrbot_plugin_self_evolution/`
+3. **安装依赖**：AstrBot 自动读 `requirements.txt` 装依赖（bili_agent 需要 `bilibili-api`）
+   - 自动装失败就手动：`pip install bilibili-api`
+4. **B站登录**：配置里填 B站 Cookie（SESSDATA 等）
+5. **重载插件**：AstrBot 面板里重载或重启
+
+### ⚠️ 常见报错排查
+
+| 报错 | 原因 | 解决 |
+|---|---|---|
+| `目录 astrbot_plugin_bili_agent 已存在` | 上次安装失败残留目录 | 删掉 `data/plugins/astrbot_plugin_bili_agent/` 再重装 |
+| `ModuleNotFoundError: bilibili_api` | 依赖没装上 | `pip install bilibili-api` 后重载插件 |
+| 日志没有 `已注册` | 插件没加载成功 | 查日志、确认依赖、确认 event_bus.py 在 plugins 根目录 |
+| `B站登录失败` | Cookie 过期 | 重新登 B站，更新 SESSDATA |
+
+### 🔗 插件联动说明
+
+三个插件通过 `event_bus.py`（放 `data/plugins/` 根目录）互相通信：
+
+- bili_agent 刷到视频 → `video_discovered` → emotional_echo 记录兴趣
+- emotional_echo 情绪波动 → `emotion_peak` → self_evolution 微调画像 + bili_agent 调整推荐
+- self_evolution 画像更新 → `profile_updated` → emotional_echo 更新反思
+
+**`event_bus.py` 必须放在 `data/plugins/` 根目录**，三个插件才能找到它。
+
 ## 📄 许可
 
 - bili_agent: 禁止商用，欢迎免费借鉴
