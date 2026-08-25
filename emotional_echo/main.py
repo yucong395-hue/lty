@@ -264,7 +264,7 @@ class EchoStore:
         conn.close()
         return [dict(r) for r in reversed(rows)]
 
-    def get_emotion_trend(self, user_id: str, days: int = 7) -> dict:
+    def get_emotion_trend(self, user_id: str, days: int = 7, gentle_threshold: float = 0.5) -> dict:
         """统计近期情绪趋势（用于温柔度自适应）"""
         cutoff = time.time() - days * 86400
         conn = self._conn()
@@ -280,13 +280,15 @@ class EchoStore:
         neg_count = sum(v for k, v in emotions.items() if k in neg_emotions)
         pos_count = sum(v for k, v in emotions.items() if k in {"happy", "surprised"})
         dominant = max(emotions, key=emotions.get) if emotions else "neutral"
+        neg_ratio = round(neg_count / total, 2) if total > 0 else 0
+        pos_ratio = round(pos_count / total, 2) if total > 0 else 0
         return {
             "total": total,
             "emotions": emotions,
-            "neg_ratio": round(neg_count / total, 2) if total > 0 else 0,
-            "pos_ratio": round(pos_count / total, 2) if total > 0 else 0,
+            "neg_ratio": neg_ratio,
+            "pos_ratio": pos_ratio,
             "dominant": dominant,
-            "suggestion": "温柔" if (neg_count > pos_count and total >= 3) else "自然",
+            "suggestion": "温柔" if (neg_ratio >= gentle_threshold and total >= 3) else "自然",
         }
 
     def search_memory(self, user_id: str, keyword: str, limit: int = 5) -> list:
@@ -593,7 +595,8 @@ class EmotionalEchoPlugin(Star):
         state = self.store.get_state(user_id)
 
         # 近期情绪趋势（温柔度自适应，⑤ 加强）
-        trend = self.store.get_emotion_trend(user_id, days=self.trend_days)
+        trend = self.store.get_emotion_trend(user_id, days=self.trend_days,
+                                              gentle_threshold=self.gentle_threshold)
 
         # 趋势感知的频道微调：若近期整体偏低落，即使此刻是自然情绪也轻柔一些
         channel_name = CHANNELS[state['channel']]['name']
