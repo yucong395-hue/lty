@@ -450,6 +450,12 @@ class SelfEvolutionPlugin(Star):
 
             # 冷却检查：同一用户 5 分钟内不重复写入
             now = time.time()
+            # 定期清理冷却字典，防止多用户场景无限膨胀（保留 1 小时内的记录）
+            if len(self._emotion_peak_cooldown) > 128:
+                cutoff = now - 3600
+                self._emotion_peak_cooldown = {
+                    k: v for k, v in self._emotion_peak_cooldown.items() if v >= cutoff
+                }
             last = self._emotion_peak_cooldown.get(user_id, 0)
             if now - last < 300:
                 return
