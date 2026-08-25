@@ -92,6 +92,8 @@ class BiliAgentPlugin(Star):
         self._init_mood()
         await self._load_credential()
         self._register_tools()
+        # 同步面板配置到 preferences（让 min_view/exclude_keywords 等配置真正生效）
+        self._sync_config_to_preferences()
         # 检查 LLM 配置，如果没有则提示用户
         try:
             providers = self.context.provider_manager.provider_insts
@@ -238,6 +240,54 @@ class BiliAgentPlugin(Star):
                 json.dump(self.preferences, f, ensure_ascii=False, indent=1)
         except Exception as e:
             logger.warning(f"[BiliAgent] 保存偏好失败: {e}")
+
+    def _sync_config_to_preferences(self):
+        """把 AstrBot 面板配置同步到 preferences，让配置真正生效。
+        面板里改的关键词/阈值会覆盖本地偏好文件，之后聊天里改偏好则优先保留。
+        """
+        try:
+            cfg = self.config or {}
+            if not isinstance(cfg, dict):
+                return
+            changed = False
+            prefs_cfg = cfg.get("preferences", {}) if isinstance(cfg.get("preferences", {}), dict) else {}
+            # 关键词（面板里设置为空字符串表示用默认，不覆盖）
+            if isinstance(prefs_cfg, dict):
+                kw = prefs_cfg.get("keywords")
+                if kw and isinstance(kw, str) and kw.strip():
+                    new_kw = [k.strip() for k in kw.split(",") if k.strip()]
+                    if new_kw != self.preferences.get("keywords", []):
+                        self.preferences["keywords"] = new_kw
+                        changed = True
+                ex_kw = prefs_cfg.get("exclude_keywords")
+                if ex_kw and isinstance(ex_kw, str) and ex_kw.strip():
+                    new_ex = [k.strip() for k in ex_kw.split(",") if k.strip()]
+                    if new_ex != self.preferences.get("exclude_keywords", []):
+                        self.preferences["exclude_keywords"] = new_ex
+                        changed = True
+                for key in ("min_view", "min_like"):
+                    try:
+                        v = int(prefs_cfg.get(key, 0) or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if v > 0 and self.preferences.get(key) != v:
+                        self.preferences[key] = v
+                        changed = True
+            # 每日上限（browse 组）
+            browse_cfg = cfg.get("browse", {}) if isinstance(cfg.get("browse", {}), dict) else {}
+            if isinstance(browse_cfg, dict):
+                try:
+                    v = int(browse_cfg.get("max_daily_browse", 0) or 0)
+                except (TypeError, ValueError):
+                    v = 0
+                if v > 0 and self.preferences.get("max_daily_browse") != v:
+                    self.preferences["max_daily_browse"] = v
+                    changed = True
+            if changed:
+                self._save_preferences()
+                logger.info(f"[BiliAgent] 面板配置已同步到偏好: {self.preferences}")
+        except Exception as e:
+            logger.debug(f"[BiliAgent] 同步面板配置失败: {e}")
 
     # ==================== LLM 工具注册 ====================
 
