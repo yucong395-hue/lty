@@ -31,6 +31,13 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, register
 
+# 事件总线（跨插件通知）
+import sys
+_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+if _PLUGIN_DIR not in sys.path:
+    sys.path.insert(0, _PLUGIN_DIR)
+from event_bus import event_bus
+
 # ═══════════════════════════════════════════════════════════════
 # 情感频道
 # ═══════════════════════════════════════════════════════════════
@@ -257,6 +264,31 @@ class EchoStore:
         conn.close()
         return [dict(r) for r in reversed(rows)]
 
+    def get_emotion_trend(self, user_id: str, days: int = 7) -> dict:
+        """统计近期情绪趋势（用于温柔度自适应）"""
+        cutoff = time.time() - days * 86400
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT emotion, COUNT(*) as cnt FROM conversation_log "
+            "WHERE user_id=? AND ts>? AND role='user' AND emotion!='' AND emotion!='neutral' "
+            "GROUP BY emotion ORDER BY cnt DESC",
+            (user_id, cutoff)).fetchall()
+        conn.close()
+        total = sum(r["cnt"] for r in rows) if rows else 0
+        emotions = {r["emotion"]: r["cnt"] for r in rows}
+        neg_emotions = {"sad", "angry", "tired", "fear", "anxious"}
+        neg_count = sum(v for k, v in emotions.items() if k in neg_emotions)
+        pos_count = sum(v for k, v in emotions.items() if k in {"happy", "surprised"})
+        dominant = max(emotions, key=emotions.get) if emotions else "neutral"
+        return {
+            "total": total,
+            "emotions": emotions,
+            "neg_ratio": round(neg_count / total, 2) if total > 0 else 0,
+            "pos_ratio": round(pos_count / total, 2) if total > 0 else 0,
+            "dominant": dominant,
+            "suggestion": "温柔" if (neg_count > pos_count and total >= 3) else "自然",
+        }
+
     def search_memory(self, user_id: str, keyword: str, limit: int = 5) -> list:
         """按关键词找回记忆（语义式回忆）"""
         conn = self._conn()
@@ -470,6 +502,21 @@ class EmotionalEchoPlugin(Star):
         self.trigger = TriggerDetector()
         self.trigger.cooldown_seconds = self.trigger_cooldown
         self.echo_enabled = config.get("enabled", True) if config else True
+
+        # ── 事件总线：跨插件联动 ──
+        try:
+            event_bus.on("video_discovered", self._on_video_discovered)
+            logger.info("[EmotionalEcho] 已注册 video_discovered 事件监听")
+        except Exception as e:
+            logger.warning(f"[EmotionalEcho] 事件总线注册失败: {e}")
+
+        # 预留：profile_updated 事件（self_evolution 画像更新后可通知）
+        try:
+            event_bus.on("profile_updated", self._on_profile_updated)
+            logger.info("[EmotionalEcho] 已注册 profile_updated 事件监听")
+        except Exception as e:
+            logger.warning(f"[EmotionalEcho] profile_updated 注册失败: {e}")
+
         logger.info("情感回响插件 v1.1 已加载 ❤️")
 
     # ── 消息监听：感知情绪 + 反馈学习 + 触发器 ──
@@ -487,13 +534,36 @@ class EmotionalEchoPlugin(Star):
         if self.remember_every:
             emotion = self.engine.detect(text)
             tone = emotion
+            emo_weight = 0.5
             if self.analyzer.available:
                 ana = self.analyzer.analyze(text)
                 if ana["emotion_tone"] != "neutral":
                     tone = ana["emotion_tone"]
                 # 情感浓度写入对话日志（用于注入）
                 self._last_tone = ana
+                # 计算情感强度（正负情感词比例）
+                emo_weight = max(ana.get("pos_score", 0), ana.get("neg_score", 0)) or 0.5
             self.store.log_message(user_id, "user", text, tone)
+
+            # 情绪记忆回写 LivingMemory（双向联动：让天依记住你的情绪）
+            if getattr(self, "cross_memory", None) and tone != "neutral":
+                try:
+                    self.cross_memory.write_emotion_to_livingmemory(
+                        user_id, tone, text, emo_weight)
+                except Exception:
+                    pass
+
+                # ── 事件总线：情绪峰值 → self_evolution 画像微调 ──
+                try:
+                    event_bus.emit("emotion_peak", {
+                        "user_id": user_id,
+                        "scope_id": user_id if user_id.startswith("private_") else "",
+                        "emotion": tone,
+                        "text": text,
+                        "weight": emo_weight,
+                    })
+                except Exception:
+                    pass
 
         self.engine.update(user_id, text)
 
@@ -518,12 +588,31 @@ class EmotionalEchoPlugin(Star):
         user_id = event.unified_msg_origin
         state = self.store.get_state(user_id)
 
+        # 近期情绪趋势（温柔度自适应，⑤ 加强）
+        trend = self.store.get_emotion_trend(user_id, days=7)
+
+        # 趋势感知的频道微调：若近期整体偏低落，即使此刻是自然情绪也轻柔一些
+        channel_name = CHANNELS[state['channel']]['name']
+        channel_prompt = self.engine.channel_prompt(user_id)
+        if state['channel'] == "natural" and trend["suggestion"] == "温柔":
+            channel_prompt = "语气轻柔简短，像深夜的轻轻一叹，不打扰"
+
         parts = [
             "[情感回响系统]",
             f"用户情绪基调：{state['emotion']}（情绪值 {state['mood_score']:.2f}）",
-            f"频道：{CHANNELS[state['channel']]['name']} —— {self.engine.channel_prompt(user_id)}",
+            f"频道：{channel_name} —— {channel_prompt}",
             f"已陪伴对话 {state['interaction_count']} 次",
         ]
+
+        # 近期情绪趋势洞察（近7天）
+        if trend["total"] >= 3:
+            emo_desc = "、".join(f"{k}×{v}" for k, v in trend["emotions"].items())
+            trend_part = f"近7天用户情绪分布：{emo_desc}"
+            if trend["neg_ratio"] > 0.5:
+                trend_part += "（近期偏低落，回应请更温柔耐心）"
+            elif trend["pos_ratio"] > 0.5:
+                trend_part += "（近期较多开心时刻，可多陪ta一起开心）"
+            parts.append(trend_part)
 
         # 重要日子
         upcoming = self.store.upcoming_dates(user_id)
@@ -755,6 +844,53 @@ class EmotionalEchoPlugin(Star):
             "memories": [{"source": m.get("source", "memory"), "text": m.get("text", "")} for m in memories],
         }
 
+    # ── 事件总线处理器（跨插件联动） ──
+    async def _on_video_discovered(self, event_name: str, data: dict):
+        """bili_agent 刷到视频时，更新用户兴趣偏好"""
+        try:
+            user_id = data.get("user_id", "")
+            if not user_id:
+                return
+            title = data.get("title", "")
+            tags = data.get("tags", "")
+            score = data.get("score", 0)
+            if score >= 60 and title:
+                interest_text = f"刷到视频: {title}"
+                if tags:
+                    interest_text += f" | 标签: {tags}"
+                if getattr(self, "cross_memory", None):
+                    self.cross_memory.write_emotion_to_livingmemory(
+                        user_id, "interest", interest_text, min(1.0, score / 100)
+                    )
+                # 兴趣也算一种正向情绪峰值，触发画像微调
+                try:
+                    event_bus.emit("emotion_peak", {
+                        "user_id": user_id,
+                        "scope_id": user_id if user_id.startswith("private_") else "",
+                        "emotion": "interest",
+                        "text": f"对视频感兴趣: {title}",
+                        "weight": min(1.0, score / 100),
+                    })
+                except Exception:
+                    pass
+                logger.info(f"[EmotionalEcho] 已记录视频兴趣: {title[:40]}")
+        except Exception as e:
+            logger.debug(f"[EmotionalEcho] 处理 video_discovered 事件异常: {e}")
+
+    # ── 事件总线：收到画像更新通知（④ 扩环） ──
+    async def _on_profile_updated(self, event_name: str, data: dict):
+        """self_evolution 更新了用户画像，记录到 echo.db 的 reflection 中"""
+        try:
+            user_id = (data or {}).get("scope_id", "") or (data or {}).get("user_id", "")
+            emotion = (data or {}).get("emotion", "")
+            if not user_id or not emotion:
+                return
+            # 把画像更新写入 reflection_log，供后续注入使用
+            self.store.add_reflection(user_id, f"画像已更新: [{emotion}] 性格特质已记录")
+            logger.info(f"[EmotionalEcho] 已记录画像更新: user={user_id} emotion={emotion}")
+        except Exception as e:
+            logger.debug(f"[EmotionalEcho] 处理 profile_updated 事件异常: {e}")
+
     async def terminate(self):
         logger.info("情感回响插件已卸载，记忆已保存在 SQLite")
 
@@ -899,3 +1035,36 @@ class CrossSystemMemory:
             return results[:limit]
         except Exception:
             return []
+
+    def write_emotion_to_livingmemory(self, user_id: str, emotion: str, text: str, weight: float = 0.5) -> bool:
+        """把情感峰值写回 LivingMemory 的 memory_atoms（情绪记忆双向联动）"""
+        try:
+            lm_path = "/root/AstrBot/data/plugin_data/astrbot_plugin_livingmemory/livingmemory.db"
+            if not os.path.exists(lm_path):
+                return False
+            conn = sqlite3.connect(lm_path, timeout=5)
+            now = time.time()
+            ttl = 30.0
+            # parent_memory_id 有 NOT NULL 约束，用 1 作为默认父节点
+            conn.execute(
+                """INSERT INTO memory_atoms (
+                    parent_memory_id, atom_type, content, entities, importance, confidence,
+                    created_at, last_accessed_at, last_reinforced_at, event_time, ttl_days,
+                    expires_at, status, reinforcement_count, decay_type, session_id, persona_id, metadata
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    1, "emotion",
+                    f"[情感回响] {emotion}: {text[:120]}",
+                    json.dumps([emotion, "情感记忆", "情绪回响"], ensure_ascii=False),
+                    min(1.0, max(0.1, weight)), 0.7, now, now, now, now, ttl,
+                    now + ttl * 86400, "active", 0, "exponential",
+                    user_id, "洛天依",
+                    json.dumps({"source": "emotional_echo", "emotion": emotion, "weight": round(weight, 3)}, ensure_ascii=False)
+                )
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.warning(f"[EmotionalEcho] 写入 LivingMemory 失败: {e}")
+            return False
