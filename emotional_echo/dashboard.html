@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>情感回响 · 状态面板</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0e0e14; color: #e8e8f0; min-height: 100vh; }
+.container { max-width: 720px; margin: 0 auto; padding: 24px 16px 60px; }
+.header { text-align: center; padding: 24px 0 28px; }
+.header h1 { font-size: 26px; font-weight: 600; background: linear-gradient(135deg, #a78bfa, #f472b6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.header p { color: #9ca3af; margin-top: 8px; font-size: 13px; }
+
+.stats { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+.stat-card { flex: 1; min-width: 140px; background: #1a1a24; border-radius: 14px; padding: 16px; text-align: center; border: 1px solid #262635; }
+.stat-card .num { font-size: 26px; font-weight: 600; color: #fff; }
+.stat-card .label { font-size: 12px; color: #9ca3af; margin-top: 6px; }
+
+.section { background: #1a1a24; border-radius: 14px; padding: 18px; margin-bottom: 16px; border: 1px solid #262635; }
+.section h2 { font-size: 15px; font-weight: 600; margin-bottom: 14px; color: #d1d5db; }
+
+.mood-line { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.mood-label { width: 90px; font-size: 13px; color: #9ca3af; }
+.mood-bar-bg { flex: 1; height: 10px; background: #262635; border-radius: 5px; overflow: hidden; }
+.mood-bar { height: 100%; border-radius: 5px; transition: width 0.6s ease; }
+.mood-val { width: 44px; font-size: 13px; text-align: right; color: #d1d5db; }
+
+.channel-badge { display: inline-block; padding: 4px 12px; border-radius: 999px; font-size: 12px; background: rgba(167,139,250,0.15); color: #a78bfa; border: 1px solid rgba(167,139,250,0.3); }
+
+.list-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #262635; font-size: 13px; }
+.list-item:last-child { border-bottom: none; }
+.list-item .em { color: #f472b6; font-weight: 500; }
+.list-item .time { color: #6b7280; font-size: 12px; }
+
+.empty { text-align: center; padding: 24px; color: #6b7280; font-size: 13px; }
+.tag { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; background: #262635; color: #9ca3af; margin-right: 6px; }
+
+.footer { text-align: center; color: #4b5563; font-size: 11px; margin-top: 24px; }
+.loading { text-align: center; padding: 40px; color: #6b7280; }
+#err { color: #f87171; text-align: center; padding: 20px; display: none; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>情感回响 · 状态面板</h1>
+    <p>天依记得你的每一句话 · Emotional Echo v1.1</p>
+  </div>
+
+  <div id="err"></div>
+  <div id="loading" class="loading">正在读取记忆……</div>
+
+  <div id="content" style="display:none">
+    <!-- 统计卡片 -->
+    <div class="stats">
+      <div class="stat-card"><div class="num" id="s_messages">-</div><div class="label">记住的话</div></div>
+      <div class="stat-card"><div class="num" id="s_peaks">-</div><div class="label">情感峰值</div></div>
+      <div class="stat-card"><div class="num" id="s_dates">-</div><div class="label">重要日子</div></div>
+      <div class="stat-card"><div class="num" id="s_days">-</div><div class="label">陪伴天数</div></div>
+    </div>
+
+    <!-- 当前状态 -->
+    <div class="section">
+      <h2>当前状态</h2>
+      <div class="list-item"><span>情绪基调</span><span id="t_emotion" style="color:#f472b6">-</span></div>
+      <div class="list-item"><span>频道</span><span><span class="channel-badge" id="t_channel">-</span></span></div>
+      <div class="list-item"><span>情绪值</span><span id="t_mood">-</span></div>
+      <div class="list-item"><span>对话次数</span><span id="t_total">-</span></div>
+    </div>
+
+    <!-- 情感倾向 -->
+    <div class="section">
+      <h2>情感倾向</h2>
+      <div id="mood_bars"></div>
+    </div>
+
+    <!-- 情感峰值 -->
+    <div class="section">
+      <h2>最近记得的情绪</h2>
+      <div id="peaks_list"></div>
+    </div>
+
+    <!-- 重要日子 -->
+    <div class="section">
+      <h2>重要日子</h2>
+      <div id="dates_list"></div>
+    </div>
+
+    <!-- 长期记忆 -->
+    <div class="section">
+      <h2>长期记忆联动</h2>
+      <div id="memories_list"></div>
+    </div>
+  </div>
+
+  <div class="footer">让每一次陪伴都有温度 · 原作有的我们都有，原作没有的我们也有</div>
+</div>
+
+<script>
+const API = location.search.includes('user=') ? location.pathname : location.pathname;
+function el(id) { return document.getElementById(id); }
+
+async function load() {
+  try {
+    const resp = await fetch(API + 'status', { cache: 'no-store' });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const d = await resp.json();
+    render(d);
+  } catch (e) {
+    el('err').style.display = 'block';
+    el('err').textContent = '读取失败：' + e.message;
+    el('loading').style.display = 'none';
+  }
+}
+
+function render(d) {
+  el('loading').style.display = 'none';
+  el('content').style.display = 'block';
+  el('s_messages').textContent = d.total_messages ?? 0;
+  el('s_peaks').textContent = d.peak_count ?? 0;
+  el('s_dates').textContent = d.date_count ?? 0;
+  el('s_days').textContent = d.days_known ?? 0;
+
+  el('t_emotion').textContent = d.emotion || 'neutral';
+  el('t_channel').textContent = d.channel || 'natural';
+  el('t_mood').textContent = (d.mood_score ?? 0).toFixed(2);
+  el('t_total').textContent = d.interaction_count ?? 0;
+
+  // 情感倾向进度条
+  const bars = el('mood_bars');
+  bars.innerHTML = '';
+  const moods = d.mood_breakdown || [];
+  const labels = { '好':'正向', '乐':'喜悦', '哀':'低落', '怒':'生气', '惧':'担忧', '恶':'排斥', '惊':'惊讶' };
+  const colors = ['#a78bfa','#f472b6','#60a5fa','#f87171','#fbbf24','#34d399','#38bdf8'];
+  moods.forEach((m, i) => {
+    const div = document.createElement('div');
+    div.className = 'mood-line';
+    div.innerHTML = `<span class="mood-label">${labels[m.k] || m.k}</span>
+      <div class="mood-bar-bg"><div class="mood-bar" style="width:${Math.min(100, m.v * 25)}%;background:${colors[i % 7]}"></div></div>
+      <span class="mood-val">${m.v}</span>`;
+    bars.appendChild(div);
+  });
+  if (!moods.length) bars.innerHTML = '<div class="empty">暂无情感分析数据</div>';
+
+  // 情感峰值
+  const peaks = el('peaks_list');
+  peaks.innerHTML = '';
+  (d.peaks || []).forEach(p => {
+    const div = document.createElement('div');
+    div.className = 'list-item';
+    div.innerHTML = `<span><span class="em">${p.emotion}</span> ${p.text.slice(0,30)}</span><span class="time">${p.time}</span>`;
+    peaks.appendChild(div);
+  });
+  if (!(d.peaks || []).length) peaks.innerHTML = '<div class="empty">还没有情绪峰值记录，聊聊天就有了</div>';
+
+  // 重要日子
+  const dates = el('dates_list');
+  dates.innerHTML = '';
+  (d.dates || []).forEach(x => {
+    const div = document.createElement('div');
+    div.className = 'list-item';
+    div.innerHTML = `<span>${x.date} ${x.event}</span><span class="time">${x.days_left === undefined ? '' : x.days_left + '天后'}</span>`;
+    dates.appendChild(div);
+  });
+  if (!(d.dates || []).length) dates.innerHTML = '<div class="empty">用 /记住 MM-DD 事件 告诉天依</div>';
+
+  // 长期记忆
+  const mems = el('memories_list');
+  mems.innerHTML = '';
+  (d.memories || []).forEach(m => {
+    const div = document.createElement('div');
+    div.className = 'list-item';
+    div.innerHTML = `<span style="color:#9ca3af">${m.text.slice(0,50)}</span><span class="tag">${m.source}</span>`;
+    mems.appendChild(div);
+  });
+  if (!(d.memories || []).length) mems.innerHTML = '<div class="empty">暂无联动记忆</div>';
+}
+
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,698 @@
+{
+    "base": {
+        "type": "object",
+        "description": "基础设置",
+        "hint": "角色、权限和后台任务范围。",
+        "items": {
+            "review_mode": {
+                "description": "进化操作需审核",
+                "type": "bool",
+                "default": true,
+                "hint": "开启后，涉及进化的危险操作需要管理员确认。"
+            },
+            "persona_name": {
+                "description": "机器人显示名",
+                "type": "string",
+                "default": "黑塔",
+                "hint": "用于对话与提示词中的角色名称。"
+            },
+            "admin_users": {
+                "description": "额外管理员列表",
+                "type": "list",
+                "default": [],
+                "hint": "除全局管理员外，允许执行敏感操作的用户列表。"
+            },
+            "target_scopes": {
+                "description": "后台任务范围",
+                "type": "list",
+                "default": [],
+                "hint": "统一指定画像、记忆、插嘴等后台任务处理范围；留空则自动发现。"
+            }
+        }
+    },
+    "memory_summary": {
+        "type": "object",
+        "description": "记忆与总结",
+        "hint": "长期记忆、知识库存储与每日总结。",
+        "items": {
+            "memory_enabled": {
+                "description": "启用长期记忆",
+                "type": "bool",
+                "default": true,
+                "hint": "控制每日总结、知识库存储和长期记忆召回。"
+            },
+            "memory_kb_name": {
+                "description": "长期记忆入口库",
+                "type": "string",
+                "default": "self_evolution_memory",
+                "hint": "作为长期记忆锚点，并用于派生各个 scope 的隔离知识库。"
+            },
+            "memory_fetch_page_size": {
+                "description": "每页拉取消息数",
+                "type": "int",
+                "default": 500,
+                "hint": "每日总结时，从 NapCat 每次分页拉取的消息数量。"
+            },
+            "memory_summary_chunk_size": {
+                "description": "每段总结消息数",
+                "type": "int",
+                "default": 200,
+                "hint": "LLM 分段总结时，每个 chunk 的最大消息条数。"
+            },
+            "memory_summary_schedule": {
+                "description": "前一日总结计划",
+                "type": "string",
+                "default": "0 6 * * *",
+                "hint": "定时执行前一自然日会话总结，Cron 默认每天 06:00。"
+            },
+            "enable_kb_memory_recall": {
+                "description": "回复时召回记忆",
+                "type": "bool",
+                "default": true,
+                "hint": "AI 回复时是否从知识库召回长期记忆上下文。"
+            },
+            "memory_query_fallback_enabled": {
+                "description": "允许兜底 KB 检索",
+                "type": "bool",
+                "default": true,
+                "hint": "当 query intent 无明确命中时，是否允许 fallback 到通用 KB 搜索。关闭后查询更精准但可能无结果。"
+            }
+        }
+    },
+    "profile": {
+        "type": "object",
+        "description": "用户画像",
+        "hint": "画像建档、摘要注入与事实写回。",
+        "items": {
+            "profile_msg_count": {
+                "description": "建档消息数量",
+                "type": "int",
+                "default": 500,
+                "hint": "构建用户画像时抓取的消息条数。"
+            },
+            "profile_cooldown_minutes": {
+                "description": "画像更新冷却",
+                "type": "int",
+                "default": 10,
+                "hint": "创建或刷新同一用户画像的冷却时间，单位分钟。"
+            },
+            "enable_profile_injection": {
+                "description": "注入画像摘要",
+                "type": "bool",
+                "default": true,
+                "hint": "AI 回复时是否注入结构化画像摘要。（影响记忆读取）"
+            },
+            "enable_profile_fact_writeback": {
+                "description": "写回新事实",
+                "type": "bool",
+                "default": true,
+                "hint": "对话中识别到的偏好或身份信息是否写回画像。（影响记忆写入）"
+            },
+            "auto_profile_enabled": {
+                "description": "启用自动建档",
+                "type": "bool",
+                "default": true,
+                "hint": "根据活跃用户自动分析并创建画像。"
+            },
+            "auto_profile_schedule": {
+                "description": "自动建档计划",
+                "type": "string",
+                "default": "0 0 * * *",
+                "hint": "定时执行自动建档任务的 Cron 表达式。"
+            },
+            "auto_profile_batch_size": {
+                "description": "每轮建档人数",
+                "type": "int",
+                "default": 3,
+                "hint": "每次自动建档处理的用户数量。"
+            },
+            "auto_profile_batch_interval": {
+                "description": "批次间隔秒数",
+                "type": "int",
+                "default": 30,
+                "hint": "多批自动建档之间的等待时间，单位秒。"
+            }
+        }
+    },
+    "reflection": {
+        "type": "object",
+        "description": "反思模块",
+        "hint": "反思注入、手动 reflect 和每日批处理。",
+        "items": {
+            "reflection_enabled": {
+                "description": "启用反思模块",
+                "type": "bool",
+                "default": true,
+                "hint": "控制反思注入、手动 reflect 和每日批处理。"
+            },
+            "reflection_schedule": {
+                "description": "每日反思计划",
+                "type": "string",
+                "default": "0 2 * * *",
+                "hint": "执行前一自然日反思、日报、画像刷新。好感度恢复已独立为 `affinity_recovery_enabled` 配置。"
+            }
+        }
+    },
+    "engagement": {
+        "type": "object",
+        "description": "社交参与",
+        "hint": "主动插嘴、轻反应与概率控制。",
+        "items": {
+            "interject_enabled": {
+                "description": "启用主动插嘴",
+                "type": "bool",
+                "default": false,
+                "hint": "定时检查群聊，满足条件时主动参与。"
+            },
+            "interject_interval": {
+                "description": "插嘴检查间隔",
+                "type": "int",
+                "default": 30,
+                "hint": "主动插嘴任务的检查频率，单位分钟。"
+            },
+            "interject_cooldown": {
+                "description": "插嘴冷却秒数",
+                "type": "int",
+                "default": 30,
+                "hint": "同一群两次主动发言之间的最短间隔。"
+            },
+            "interject_trigger_probability": {
+                "description": "最终发送概率",
+                "type": "float",
+                "default": 0.5,
+                "hint": "通过判断后，真正执行插嘴的概率阈值。"
+            },
+            "engagement_react_probability": {
+                "description": "casual场景下随机轻反应概率",
+                "type": "float",
+                "default": 0.15,
+                "hint": "casual场景下随机触发轻反应(表情包/短句)的概率。"
+            }
+        }
+    },
+    "affinity": {
+        "type": "object",
+        "description": "关系温度",
+        "hint": "弱信号自动积分与每日恢复。",
+        "items": {
+            "affinity_auto_enabled": {
+                "description": "启用自动好感度",
+                "type": "bool",
+                "default": true,
+                "hint": "自动根据弱信号调整好感度，无需LLM调用。"
+            },
+            "affinity_recovery_enabled": {
+                "description": "启用每日好感度恢复",
+                "type": "bool",
+                "default": true,
+                "hint": "每日自动恢复低于50的用户好感度，每天最多+2。独立于反思模块运行。"
+            },
+            "affinity_direct_engagement_delta": {
+                "description": "主动互动加分值",
+                "type": "int",
+                "default": 1,
+                "hint": "@bot、回复bot、私聊消息的自动加分。"
+            },
+            "affinity_friendly_language_delta": {
+                "description": "礼貌语言加分值",
+                "type": "int",
+                "default": 1,
+                "hint": "检测到谢谢、厉害等礼貌词时的自动加分。"
+            },
+            "affinity_hostile_language_delta": {
+                "description": "攻击语言扣分值",
+                "type": "int",
+                "default": -2,
+                "hint": "检测到滚、傻等攻击词时的自动扣分。"
+            },
+            "affinity_returning_user_delta": {
+                "description": "回访用户加分值",
+                "type": "int",
+                "default": 1,
+                "hint": "连续多日回访的用户自动加分。"
+            },
+            "affinity_direct_engagement_cooldown_minutes": {
+                "description": "互动冷却分钟",
+                "type": "int",
+                "default": 360,
+                "hint": "direct_engagement信号的重试间隔（分钟）。"
+            },
+            "affinity_friendly_daily_limit": {
+                "description": "礼貌词每日上限",
+                "type": "int",
+                "default": 2,
+                "hint": "friendly_language信号每天最多触发次数。"
+            },
+            "affinity_hostile_cooldown_minutes": {
+                "description": "攻击冷却分钟",
+                "type": "int",
+                "default": 60,
+                "hint": "hostile_language信号的重试间隔（分钟）。"
+            },
+            "affinity_returning_user_daily_limit": {
+                "description": "回访每日上限",
+                "type": "int",
+                "default": 1,
+                "hint": "returning_user信号每天最多触发次数。"
+            }
+        }
+    },
+    "san": {
+        "type": "object",
+        "description": "SAN 精力系统",
+        "hint": "精力值、疲劳感与群氛围分析。",
+        "items": {
+            "san_enabled": {
+                "description": "启用SAN系统",
+                "type": "bool",
+                "default": true,
+                "hint": "控制精力值、疲劳感和相关行为表现。"
+            },
+            "san_max": {
+                "description": "SAN最大值",
+                "type": "int",
+                "default": 100,
+                "hint": "SAN 精力值的上限。"
+            },
+            "san_cost_per_message": {
+                "description": "每条消息耗SAN",
+                "type": "float",
+                "default": 2.0,
+                "hint": "每次消息处理消耗的 SAN 值。"
+            },
+            "san_recovery_per_hour": {
+                "description": "每小时恢复SAN",
+                "type": "int",
+                "default": 10,
+                "hint": "每小时自动恢复的 SAN 值。"
+            },
+            "san_low_threshold": {
+                "description": "低SAN阈值",
+                "type": "int",
+                "default": 20,
+                "hint": "低于该值时会表现出疲惫或保守。"
+            },
+            "san_auto_analyze_enabled": {
+                "description": "启用SAN分析",
+                "type": "bool",
+                "default": true,
+                "hint": "定时分析群氛围并调整 SAN。"
+            },
+            "san_analyze_interval": {
+                "description": "SAN分析间隔",
+                "type": "int",
+                "default": 30,
+                "hint": "群氛围分析任务的执行频率，单位秒。"
+            },
+            "san_msg_count_per_group": {
+                "description": "每群分析条数",
+                "type": "int",
+                "default": 50,
+                "hint": "每次群氛围分析读取的消息条数。"
+            }
+        }
+    },
+    "sticker": {
+        "type": "object",
+        "description": "娱乐",
+        "hint": "表情包、今日老婆、群菜单等娱乐功能配置。",
+        "items": {
+            "entertainment_enabled": {
+                "description": "启用娱乐模块",
+                "type": "bool",
+                "default": true,
+                "hint": "控制今日老婆、群菜单、自然语言触发等娱乐功能。"
+            },
+            "sticker_learning_enabled": {
+                "description": "启用表情包学习",
+                "type": "bool",
+                "default": false,
+                "hint": "允许从目标用户消息中学习和记录表情包。"
+            },
+            "sticker_target_qq": {
+                "description": "学习目标QQ列表",
+                "type": "list",
+                "default": [],
+                "hint": "指定优先学习表情包的 QQ 号列表。"
+            },
+            "sticker_total_limit": {
+                "description": "表情包总上限",
+                "type": "int",
+                "default": 100,
+                "hint": "表情包库存储的总数量上限。"
+            },
+            "sticker_send_cooldown": {
+                "description": "发送冷却分钟",
+                "type": "int",
+                "default": 30,
+                "hint": "两次主动发表情包之间的最短分钟数。"
+            },
+            "sticker_freq_threshold": {
+                "description": "学习频次阈值",
+                "type": "int",
+                "default": 2,
+                "hint": "达到该频次后更容易被纳入学习候选。"
+            },
+            "meal_max_items": {
+                "description": "群菜单最大道数",
+                "type": "int",
+                "default": 100,
+                "hint": "每个群菜单最多存放的菜品数量上限。实际硬上限为 500。"
+            },
+            "meal_eat_keywords": {
+                "description": "吃啥触发关键词",
+                "type": "list",
+                "default": [
+                    "吃啥",
+                    "吃什么",
+                    "今天吃啥",
+                    "今天吃什么",
+                    "吃点啥"
+                ],
+                "hint": "触发随机推荐单道菜的关键词。"
+            },
+            "meal_banquet_keywords": {
+                "description": "摆酒席触发关键词",
+                "type": "list",
+                "default": [
+                    "摆酒席",
+                    "开席",
+                    "整一桌",
+                    "来一桌",
+                    "上菜"
+                ],
+                "hint": "触发随机抽取多道菜的关键词。"
+            },
+            "meal_banquet_count": {
+                "description": "摆酒席触发次数上限",
+                "type": "int",
+                "default": 5,
+                "hint": "5 分钟内最多触发多少次摆酒席。超过后冷却 meal_banquet_cooldown_minutes 分钟。"
+            },
+            "meal_banquet_cooldown_minutes": {
+                "description": "摆酒席冷却分钟数",
+                "type": "int",
+                "default": 5,
+                "hint": "触发次数超限后，冷却多少分钟。"
+            }
+        }
+    },
+    "prompt": {
+        "type": "object",
+        "description": "Prompt 注入",
+        "hint": "上下文注入、提示词长度与行为开关。",
+        "items": {
+            "disable_framework_contexts": {
+                "description": "禁用框架上下文",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后不再注入 AstrBot 框架自带上下文。"
+            },
+            "inject_group_history": {
+                "description": "注入群聊历史",
+                "type": "bool",
+                "default": true,
+                "hint": "AI 回复前注入短期群聊历史。"
+            },
+            "group_history_count": {
+                "description": "历史注入条数",
+                "type": "int",
+                "default": 10,
+                "hint": "注入到提示词中的群聊历史条数。"
+            },
+            "max_prompt_injection_length": {
+                "description": "注入最大长度",
+                "type": "int",
+                "default": 2000,
+                "hint": "所有注入内容合并后的最大长度。"
+            },
+            "surprise_enabled": {
+                "description": "启用惊奇检测",
+                "type": "bool",
+                "default": true,
+                "hint": "识别惊奇内容并提高关注度。"
+            },
+            "surprise_boost_keywords": {
+                "description": "惊奇关键词表",
+                "type": "list",
+                "default": [
+                    "突然",
+                    "惊讶",
+                    "没想到",
+                    "居然"
+                ],
+                "hint": "命中这些关键词时提升惊奇加成。"
+            },
+            "dropout_enabled": {
+                "description": "启用随机留白",
+                "type": "bool",
+                "default": true,
+                "hint": "用随机留白降低过于稳定的回应频率。"
+            },
+            "dropout_edge_rate": {
+                "description": "随机留白概率",
+                "type": "float",
+                "default": 0.2,
+                "hint": "达到边缘条件时主动放弃回应的概率。"
+            }
+        }
+    },
+    "debug": {
+        "type": "object",
+        "description": "调试日志",
+        "hint": "各模块调试开关，建议生产环境关闭。",
+        "items": {
+            "debug_log_enabled": {
+                "description": "输出调试日志",
+                "type": "bool",
+                "default": false,
+                "hint": "生产环境建议关闭，避免日志量过大。"
+            },
+            "memory_debug_enabled": {
+                "description": "记忆模块调试日志",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后记录 MemoryRouter、MemoryQueryService、SessionMemoryStore、Summarizer 的路由和查询详情。"
+            },
+            "engagement_debug_enabled": {
+                "description": "社交互动调试日志",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后记录场景判断、eligibility、engagement plan 和 execute 结果。"
+            },
+            "affinity_debug_enabled": {
+                "description": "情感积分调试日志",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后记录信号命中、限流、积分变更原因。"
+            }
+        }
+    },
+    "moderation": {
+        "type": "object",
+        "description": "图片审核与处罚",
+        "hint": "图片 caption、NSFW/Promo 分类与执行处罚配置。",
+        "items": {
+            "moderation_enabled": {
+                "type": "bool",
+                "default": true,
+                "hint": "是否启用图片审核功能。"
+            },
+            "moderation_enforcement_enabled": {
+                "type": "bool",
+                "default": false,
+                "hint": "是否执行真实处罚（delete/ban/kick）。False 时为 dry-run 模式，仅记录日志和 evidence。"
+            },
+            "moderation_nsfw_keywords": {
+                "type": "list",
+                "default": ["nsfw", "nude", "naked", "porn", "explicit", "色情", "裸体", "成人内容", "成人向", "露点", "性交", "AV", "色情内容", "羞红", "sm", "擦边", "软色情", "肉体", "肌肤", "身材", "诱惑", "挑逗", "性感"],
+                "description": "NSFW 关键词",
+                "hint": "检测到这些关键词则触发 NSFW 审核。多值用 | 分隔，留空用默认值。"
+            },
+            "moderation_promo_keywords": {
+                "type": "list",
+                "default": ["二维码", "加群", "加我", "联系方式", "扫码", "邀请", "入群", "群二维码", "QQ号", "微信号", "TG", "Telegram", "引流", "推广", "宣传", "广告"],
+                "description": "引流推广关键词",
+                "hint": "检测到这些关键词则触发引流推广审核。多值用 | 分隔，留空用默认值。"
+            },
+            "moderation_refusal_keywords": {
+                "type": "list",
+                "default": ["无法提供", "无法描述", "无法对此", "无法为", "不适合提供", "不适宜提供", "拒绝", "拒绝传播", "无法总结", "色情", "低俗", "不符合", "不遵守", "无法处理", "无法进行", "不当信息", "不当内容"],
+                "description": "模型拒绝描述关键词",
+                "hint": "命中≥2个则判定为模型拒绝描述（说明图片有问题）。多值用 | 分隔，留空用默认值。"
+            },
+            "moderation_nsfw_refusal_confidence": {
+                "type": "float",
+                "default": 0.9,
+                "description": "NSFW 拒绝描述置信度",
+                "hint": "拒绝描述被判定为 NSFW 时的置信度。0.0~1.0，越高越严格。"
+            },
+            "moderation_promo_refusal_confidence": {
+                "type": "float",
+                "default": 0.7,
+                "description": "引流推广拒绝描述置信度",
+                "hint": "拒绝描述被判定为引流推广时的置信度。0.0~1.0。"
+            },
+            "moderation_weak_keyword_confidence": {
+                "type": "float",
+                "default": 0.5,
+                "description": "关键词匹配置信度",
+                "hint": "命中关键词时的置信度。0.0~1.0。"
+            },
+            "moderation_confidence_threshold": {
+                "type": "float",
+                "default": 0.6,
+                "description": "置信度门槛",
+                "hint": "低于此值则忽略不处罚。0.0~1.0，越低越严格。"
+            },
+            "moderation_escalation_threshold": {
+                "type": "int",
+                "default": 2,
+                "description": "踢人阈值",
+                "hint": "24小时内触发多少次处罚后升级为踢人。"
+            },
+            "moderation_ban_duration_minutes": {
+                "type": "int",
+                "default": 60,
+                "description": "禁言时长",
+                "hint": "禁言时长（分钟），设为0则不解禁。"
+            },
+            "moderation_nsfw_warning_message": {
+                "type": "list",
+                "default": ["我草，色图", "我靠，这啥", "离谱"],
+                "description": "NSFW 反应消息",
+                "hint": "检测到 NSFW 内容后发送的反应消息，随机选一条。"
+            },
+            "moderation_nsfw_ban_reason_message": {
+                "type": "string",
+                "default": "检测到不当内容，已处理",
+                "description": "NSFW 处罚理由消息",
+                "hint": "禁言/踢人后发送的理由消息。"
+            },
+            "moderation_promo_warning_message": {
+                "type": "list",
+                "default": ["二维码？引流是吧", "加群？爬", "引流司马"],
+                "description": "引流推广反应消息",
+                "hint": "检测到引流推广内容后发送的反应消息，随机选一条。"
+            },
+            "moderation_promo_ban_reason_message": {
+                "type": "string",
+                "default": "检测到引流内容，已处理",
+                "description": "引流推广处罚理由消息",
+                "hint": "禁言/踢人后发送的理由消息。"
+            }
+        }
+    },
+    "sticker_reply": {
+        "type": "object",
+        "description": "回复表情包",
+        "hint": "Bot 回复时随机附加表情包。",
+        "items": {
+            "sticker_reply_enabled": {
+                "type": "bool",
+                "default": false,
+                "description": "开启回复表情包",
+                "hint": "开启后 Bot 回复时有一定概率附加随机表情包。"
+            },
+            "sticker_reply_chance": {
+                "type": "int",
+                "default": 20,
+                "description": "触发概率",
+                "hint": "1~100，roll 1d100 ≤ 此值时触发。"
+            },
+            "sticker_reply_max_per_hour": {
+                "type": "int",
+                "default": 10,
+                "description": "每小时上限",
+                "hint": "每小时最多附加表情包的次数，防止刷屏。"
+            },
+            "sticker_reply_min_text_length": {
+                "type": "int",
+                "default": 5,
+                "description": "最低文字长度",
+                "hint": "回复文字长度 ≥ 此值时才触发表情包，短回复不触发。"
+            }
+        }
+    },
+    "update_notify": {
+        "type": "object",
+        "description": "GitHub 更新通知",
+        "hint": "插件仓库更新时自动通知指定群聊。",
+        "items": {
+            "update_notify_group_id": {
+                "description": "通知群号列表",
+                "type": "list",
+                "default": [],
+                "hint": "留空则不启用通知。填入群号后，检测到新 commit 会自动发送通知。"
+            },
+            "update_notify_user_ids": {
+                "description": "通知用户 ID 列表（私聊）",
+                "type": "list",
+                "default": [],
+                "hint": "填入用户 QQ 号，检测到新 commit 会发送私聊通知。"
+            },
+            "update_notify_repo": {
+                "description": "仓库路径",
+                "type": "string",
+                "default": "Renyus/astrbot_plugin_self_evolution",
+                "hint": "格式：owner/repo"
+            },
+            "update_notify_branch": {
+                "description": "分支名",
+                "type": "string",
+                "default": "master",
+                "hint": "要检查的分支名，如 master、refactor/napcat-integration"
+            },
+            "update_check_interval": {
+                "description": "检查间隔（分钟）",
+                "type": "int",
+                "default": 30,
+                "hint": "每多少分钟检查一次 GitHub 新提交。"
+            }
+        }
+    },
+    "poke": {
+        "type": "object",
+        "description": "戳一戳互动",
+        "hint": "戳我时的互动反应。",
+        "items": {
+            "poke_reply_enabled": {
+                "description": "启用戳回复",
+                "type": "bool",
+                "default": true,
+                "hint": "开启后收到戳一戳会有反应。"
+            },
+            "poke_poke_back_chance": {
+                "description": "戳回概率",
+                "type": "int",
+                "default": 50,
+                "hint": "1~100，戳回的概率；否则发送吐槽文字。"
+            },
+            "poke_complaint_texts": {
+                "description": "吐槽文本列表",
+                "type": "list",
+                "default": ["干嘛呢~", "有事说事！", "别闹", "正经点"],
+                "hint": "不戳回时随机选一条发送。"
+            }
+        }
+    },
+    "persona_arc": {
+        "type": "object",
+        "description": "人格弧线外挂",
+        "hint": "角色人格成长弧线配置，支持阶段化人格演变。",
+        "items": {
+            "persona_arc_enabled": {
+                "description": "启用人格弧线",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后启用人格弧线系统，需要同时配置 active_arc_id。"
+            },
+            "persona_arc_active_arc_id": {
+                "description": "启用的弧线ID",
+                "type": "string",
+                "default": "amphoreus_demurge",
+                "hint": "指定启用的弧线配置ID，对应 engine/persona_arc/profiles/ 下的模块名。"
+            }
+        }
+    }
+}

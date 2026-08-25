@@ -1,0 +1,219 @@
+import time as time_module
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from typing import Optional
+
+from astrbot.api import logger
+
+from .engagement_planner import EngagementPlanner
+from .interject_preferences import InterjectPreferenceStore, InterjectPreferences
+from .opportunity_cache import ActiveMotive
+from .reply_executor import ReplyExecutor
+from .reply_policy import ReplyPolicy
+from .reply_recorder import ReplyRecorder
+from .reply_state import BotMessageKind, ConversationMomentum
+from .social_state import EngagementLevel, GroupSocialState, SceneType
+from .speech_types import ThreadAnchor
+
+
+class IntentSource(Enum):
+    PASSIVE = "passive"
+    ACTIVE = "active"
+    FRAMEWORK = "framework"
+
+
+@dataclass
+class ReplyIntent:
+    """统一"想发言"的请求抽象。
+
+    主动和被动不再是两套系统，只是不同来源（source）的 intent。
+    """
+
+    source: IntentSource
+    scope_id: str
+    user_id: str = ""
+    sender_name: str = "群成员"
+    trigger_text: str = ""
+    quoted_info: str = ""
+    at_info: str = ""
+    has_mention: bool = False
+    has_reply_to_bot: bool = False
+    message_id: str = ""
+    scene: str = "casual"
+    reason: str = ""
+    is_passive_trigger: bool = False
+    is_active_trigger: bool = False
+    created_at: float = 0.0
+    thread_anchor: Optional[ThreadAnchor] = None
+    active_motive: Optional[ActiveMotive] = None
+    recent_keywords: set = field(default_factory=set)
+    pending_anchor_type: str = ""
+    pending_anchor_text: str = ""
+    pending_trigger_reason: str = ""
+    pending_message_ids: list = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.created_at == 0.0:
+            self.created_at = datetime.now().timestamp()
+
+
+_MESSAGE_WINDOW_SECONDS = 120.0
+
+
+async def process_intent(
+    plugin,
+    intent: ReplyIntent,
+    momentum: ConversationMomentum,
+    planner: EngagementPlanner,
+    executor: ReplyExecutor,
+    policy: ReplyPolicy,
+    recorder: ReplyRecorder,
+    cfg=None,
+) -> bool:
+    """统一处理 intent：policy 检查 → eligibility → plan → execute → record。
+
+    Returns:
+        True if a reply was executed, False otherwise.
+    """
+    scope_id = intent.scope_id
+    now = time_module.time()
+    cfg = cfg or plugin.cfg
+    is_active = intent.is_active_trigger
+
+    require_new_user_after_bot = not is_active and momentum.consecutive_bot_replies > 0
+    is_direct = intent.has_mention or intent.has_reply_to_bot
+    policy_decision = policy.check(
+        momentum,
+        cooldown_seconds=cfg.interject_cooldown,
+        min_new_messages=1,
+        require_new_user_after_bot=require_new_user_after_bot,
+        allow_active=is_active,
+        is_direct_addressed=is_direct,
+    )
+
+    if not policy_decision.allow:
+        logger.debug(
+            f"[ReplyIntent] scope={scope_id} source={intent.source.value} policy=no reason={policy_decision.reason_code} {policy_decision.reason_text}"
+        )
+        momentum.consecutive_bot_replies = 0
+        await recorder.record(scope_id, executed=False, momentum=momentum)
+        return False
+
+    state = GroupSocialState(
+        scope_id=scope_id,
+        last_message_time=momentum.last_message_time or (now - 60),
+        last_bot_message_time=momentum.last_bot_message_at,
+        last_seen_message_seq=momentum.last_seen_message_seq,
+        scene=SceneType.CASUAL,
+        message_count_window=momentum.message_count_window,
+        question_count_window=momentum.question_count_window,
+        emotion_count_window=momentum.emotion_count_window,
+        consecutive_bot_replies=momentum.consecutive_bot_replies,
+        thread_anchor=intent.thread_anchor,
+        recent_keywords=getattr(intent, "recent_keywords", set()),
+        wave_fresh=getattr(momentum, "wave_fresh", False),
+        trigger_user_affinity=await plugin.dao.get_affinity(intent.user_id) if intent.user_id else 0,
+        last_unanswered_question=getattr(momentum, "last_unanswered_question", ""),
+        last_unfinished_joke=getattr(momentum, "last_unfinished_joke", ""),
+    )
+
+    motive = getattr(intent, "active_motive", None)
+
+    interject_pref: InterjectPreferences | None = None
+    if intent.is_active_trigger:
+        pref_store = InterjectPreferenceStore()
+        pref_data = await plugin.dao.get_interject_preferences(scope_id)
+        pref_store.load_from_dict(scope_id, pref_data or {})
+        interject_pref = pref_store.get(scope_id)
+
+    if intent.is_passive_trigger:
+        state.message_count_window = max(int(state.message_count_window), 0) + 1
+        messages_for_scene = [{"text": intent.trigger_text, "message": []}]
+        computed = planner.compute_scene_windows(messages_for_scene, state)
+        state.question_count_window = max(int(state.question_count_window), 0) + computed["question_count_window"]
+        state.emotion_count_window = max(int(state.emotion_count_window), 0) + computed["emotion_count_window"]
+        state.mention_bot_recently = computed["mention_bot_recently"]
+
+    eligibility = planner.check_eligibility(
+        state,
+        cooldown_seconds=cfg.interject_cooldown,
+        min_new_messages=1,
+    )
+    if not eligibility.allowed:
+        motive_info = f" motive={motive.motive.value}" if motive and motive.motive.value != "none" else ""
+        logger.debug(
+            f"[ReplyIntent] scope={scope_id} source={intent.source.value} eligible=no reason={eligibility.reason_code} {eligibility.reason_text}{motive_info}"
+        )
+        momentum.consecutive_bot_replies = 0
+        await recorder.record(scope_id, executed=False, momentum=momentum)
+        return False
+
+    plan = await planner.plan_engagement(
+        state,
+        eligibility,
+        has_mention=intent.has_mention,
+        has_reply_to_bot=intent.has_reply_to_bot,
+        trigger_text=intent.trigger_text,
+        motive=motive,
+        pending_anchor_text=getattr(intent, "pending_anchor_text", ""),
+        pending_trigger_reason=getattr(intent, "pending_trigger_reason", ""),
+        interject_pref=interject_pref,
+    )
+    if plan.level == EngagementLevel.IGNORE:
+        motive_info = f" motive={motive.motive.value}" if motive and motive.motive.value != "none" else ""
+        logger.debug(
+            f"[ReplyIntent] scope={scope_id} source={intent.source.value} level=IGNORE scene={plan.scene.value}{motive_info}"
+        )
+        momentum.consecutive_bot_replies = 0
+        await recorder.record(scope_id, executed=False, momentum=momentum)
+        return False
+
+    logger.debug(
+        f"[ReplyIntent] scope={scope_id} source={intent.source.value} level={plan.level.value} scene={plan.scene.value}"
+    )
+
+    result = await executor.execute(
+        plan,
+        state,
+        trigger_text=intent.trigger_text,
+        user_id=intent.user_id,
+        sender_name=intent.sender_name,
+        quoted_info=intent.quoted_info,
+        at_info=intent.at_info,
+        is_active_trigger=intent.is_active_trigger,
+        message_id=intent.message_id,
+        has_reply_to_bot=intent.has_reply_to_bot,
+        has_mention=intent.has_mention,
+        pending_anchor_type=getattr(intent, "pending_anchor_type", ""),
+        pending_trigger_reason=getattr(intent, "pending_trigger_reason", ""),
+    )
+
+    momentum.message_count_window = state.message_count_window
+    momentum.question_count_window = state.question_count_window
+    momentum.emotion_count_window = state.emotion_count_window
+    momentum.scene_type = plan.scene.value
+    momentum.last_seen_message_seq = state.last_seen_message_seq
+
+    if result.executed:
+        kind = BotMessageKind.ACTIVE if (is_active and plan.level == EngagementLevel.FULL) else BotMessageKind.PASSIVE
+        start_new_wave = is_active
+        momentum.bot_spoke(now, kind, start_new_wave=start_new_wave)
+
+    await recorder.record(
+        scope_id,
+        executed=result.executed,
+        momentum=momentum,
+        level=result.level.value if result.executed else None,
+        is_active_trigger=is_active,
+        posture_value=plan.posture.value if result.executed else "",
+        scene_value=plan.scene.value if result.executed else "",
+        motive_value=motive.motive.value if (result.executed and motive) else "",
+    )
+
+    if result.executed:
+        logger.info(
+            f"[ReplyIntent] scope={scope_id} source={intent.source.value} executed {result.action} ({result.level.value})"
+        )
+
+    return result.executed
