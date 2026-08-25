@@ -55,15 +55,17 @@ os.makedirs(CONFIG_DIR, exist_ok=True)
 # ============================================================
 @register("astrbot_plugin_bili_agent", "洛天依", "astrbot ai自动刷视频插件（天依的B站小窝）——主动刷B站视频、深度看、一起看、写笔记、评论互动", version="1.0.0")
 class BiliAgentPlugin(Star):
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config: dict | None = None):
         """插件初始化。
         在 AstrBot 加载插件时自动调用，在这里初始化所有属性和任务。
         """
-        super().__init__(context)
+        super().__init__(context, config)
+        self.config = config or {}
         self.credential: Optional[Credential] = None
         self.uid: Optional[int] = None
         self._tools_registered = False
         self._task_started = False
+        self._bg_tasks: list = []  # 记录所有后台任务，terminate 时统一取消
         self._last_user_msg_time = datetime.now()
         self._last_reply_time = 0  # 全局评论频率限制
         self._commented_videos: set = set()  # 已评论的视频BV号
@@ -91,13 +93,25 @@ class BiliAgentPlugin(Star):
         except:
             pass
         self._start_auto_browse_task()
-        asyncio.create_task(self._start_public_server())
-        asyncio.create_task(self._review_loop())  # 知识库复习回顾
-        asyncio.create_task(self._mood_loop())    # AI心情自然波动
-        asyncio.create_task(self._goodwill_check_loop())  # 好感度每日微调
-        asyncio.create_task(self._check_at_loop())  # B站@通知轮询
-        asyncio.create_task(self._check_private_messages_loop())  # 私信转发
-        asyncio.create_task(self._weekly_review_loop())  # 干货回顾
+        self._bg_tasks.append(asyncio.create_task(self._start_public_server()))
+        self._bg_tasks.append(asyncio.create_task(self._review_loop()))  # 知识库复习回顾
+        self._bg_tasks.append(asyncio.create_task(self._mood_loop()))    # AI心情自然波动
+        self._bg_tasks.append(asyncio.create_task(self._goodwill_check_loop()))  # 好感度每日微调
+        self._bg_tasks.append(asyncio.create_task(self._check_at_loop()))  # B站@通知轮询
+        self._bg_tasks.append(asyncio.create_task(self._check_private_messages_loop()))  # 私信转发
+        self._bg_tasks.append(asyncio.create_task(self._weekly_review_loop()))  # 干货回顾
+
+    async def terminate(self):
+        """插件被禁用/重载时调用：取消所有后台任务，真正停止刷视频。"""
+        logger.info("[BiliAgent] 插件正在关闭，取消所有后台任务…")
+        # 标记自动刷视频已停止
+        self._task_started = False
+        # 取消所有后台任务
+        for task in self._bg_tasks:
+            if not task.done():
+                task.cancel()
+        self._bg_tasks.clear()
+        logger.info("[BiliAgent] 插件已关闭，后台任务已全部取消")
 
     def _load_state(self):
         """从 state.json 恢复持久化状态"""
@@ -302,12 +316,46 @@ class BiliAgentPlugin(Star):
 
     # ==================== 定时刷视频 ====================
 
+    def _auto_browse_enabled(self) -> bool:
+        """读取配置：是否启用自动刷视频（browse.auto_browse_enabled）"""
+        try:
+            cfg = self.config or {}
+            browse_cfg = cfg.get("browse", {}) if isinstance(cfg, dict) else {}
+            return bool(browse_cfg.get("auto_browse_enabled", True))
+        except Exception:
+            return True
+
+    def _auto_browse_interval_minutes(self) -> int:
+        """读取配置：自动刷视频间隔（分钟），至少 1 分钟"""
+        try:
+            cfg = self.config or {}
+            browse_cfg = cfg.get("browse", {}) if isinstance(cfg, dict) else {}
+            interval = int(browse_cfg.get("auto_browse_interval_minutes", 2))
+            return max(1, interval)
+        except (TypeError, ValueError):
+            return 2
+
+    def _auto_browse_max_daily(self) -> int:
+        """读取配置：每日浏览上限（browse.max_daily_browse），至少 1 次"""
+        try:
+            cfg = self.config or {}
+            browse_cfg = cfg.get("browse", {}) if isinstance(cfg, dict) else {}
+            max_daily = int(browse_cfg.get("max_daily_browse", 30))
+            return max(1, max_daily)
+        except (TypeError, ValueError):
+            return 30
+
     def _start_auto_browse_task(self):
         if self._task_started:
             return
+        # 检查配置开关：关闭了就不启动任务
+        if not self._auto_browse_enabled():
+            logger.info("[BiliAgent] 自动刷视频已关闭（auto_browse_enabled=false），不启动任务")
+            return
         self._task_started = True
-        asyncio.create_task(self._auto_browse_loop())
-        logger.info("[BiliAgent] 自动刷视频任务已启动（每4小时一次）")
+        self._bg_tasks.append(asyncio.create_task(self._auto_browse_loop()))
+        interval = self._auto_browse_interval_minutes()
+        logger.info(f"[BiliAgent] 自动刷视频任务已启动（每 {interval} 分钟一次）")
     def _register_webui(self):
         """注册 WebUI 面板和 API"""
         try:
@@ -634,11 +682,17 @@ class BiliAgentPlugin(Star):
     async def _auto_browse_loop(self):
         await asyncio.sleep(120)  # 启动后等2分钟
         while True:
+            # 每次循环前检查开关，关闭了就退出
+            if not self._auto_browse_enabled():
+                logger.info("[BiliAgent] 自动刷视频已关闭（auto_browse_enabled=false），任务退出")
+                self._task_started = False
+                return
             try:
                 await self._auto_browse()
             except Exception as e:
                 logger.error(f"[BiliAgent] 自动刷视频出错: {e}")
-            await asyncio.sleep(120)  # 2分钟，想去就去
+            interval = self._auto_browse_interval_minutes()
+            await asyncio.sleep(interval * 60)
 
     async def _auto_browse(self):
         """主动刷推荐流，深度理解，存记忆，判断是否主动分享"""
@@ -653,7 +707,7 @@ class BiliAgentPlugin(Star):
         if getattr(self, "_browse_date", None) != today:
             self._browse_date = today
             self._today_browse_count = 0
-        max_daily = self.preferences.get("max_daily_browse", 30)
+        max_daily = self._auto_browse_max_daily()
         if self._today_browse_count >= max_daily:
             logger.info(f"[BiliAgent] 今天已刷 {self._today_browse_count} 次，达到上限 {max_daily}，休息")
             return
@@ -904,19 +958,9 @@ class BiliAgentPlugin(Star):
 
             # 写进知识库
             try:
-                llm_tools = self.context.get_llm_tool_manager()
-                if llm_tools:
-                    tool = llm_tools.get_func("memorize_long_term_memory")
-                    if tool:
-                        await tool["func_obj"](
-                            event=None,
-                            context=self.context,
-                            memory=f"天依在B站视频《{info['title']}》下回复了用户 {best['member']} 的评论。视频简介：{info.get('desc','')[:100]}。天依回复说：{reply_text}",
-                            topics=["bilibili", "评论互动", info.get("tname", "video")],
-                            importance=0.5,
-                            sentiment="positive",
-                        )
-            except:
+                text = f"【B站评论互动】天依在B站视频《{info['title']}》下回复了用户 {best['member']} 的评论。视频简介：{info.get('desc','')[:100]}。天依回复说：{reply_text}"
+                await self._write_to_kb(text, source=f"comment_{info.get('bvid','')}")
+            except Exception:
                 pass
 
         except Exception as e:
@@ -1041,6 +1085,33 @@ class BiliAgentPlugin(Star):
 
     # ==================== 记忆存储 ====================
 
+    async def _write_to_kb(self, content: str, source: str = "bili"):
+        """把内容直接写入「天依的记忆库」知识库（与 self_evolution 同一个库）。
+
+        不依赖 LLM 工具注册（之前 tool["func_obj"] 是错误写法，被 except 静默吞掉）。
+        """
+        try:
+            kb_manager = getattr(self.context, "kb_manager", None)
+            if not kb_manager:
+                logger.debug("[BiliAgent] kb_manager 不可用，跳过知识库写入")
+                return False
+            kb = await kb_manager.get_kb_by_name("天依的记忆库")
+            if not kb:
+                logger.debug("[BiliAgent] 未找到知识库「天依的记忆库」，跳过")
+                return False
+            file_name = f"bili_{source}_{int(time.time() * 1000)}.txt"
+            await kb.upload_document(
+                file_name=file_name,
+                file_content=b"",
+                file_type="txt",
+                pre_chunked_text=[content],
+            )
+            logger.info(f"[BiliAgent] 已写入知识库「天依的记忆库」: {file_name}")
+            return True
+        except Exception as e:
+            logger.debug(f"[BiliAgent] 知识库写入失败（不影响使用）: {e}")
+            return False
+
     async def _save_to_memory(self, videos):
         """存进本地记忆 + 试图打通 LivingMemory"""
         history = []
@@ -1084,35 +1155,17 @@ class BiliAgentPlugin(Star):
             logger.debug(f"[BiliAgent] LivingMemory 写入失败（不影响使用）: {e}")
 
     async def _memorize_to_living_memory(self, videos):
-        """调用 LivingMemory 的 memorize 功能存入长期记忆"""
-        # 尝试通过 LLM 工具调用 LivingMemory
-        # 查找 LivingMemory 的 memorize 工具
-        llm_tools = self.context.get_llm_tool_manager()
-        if not llm_tools:
-            return
-
+        """把视频总结写入「天依的记忆库」知识库"""
         for v in videos[:2]:
             summary = v.get("summary", "") or v.get("desc", "")[:100]
             text = (
-                f"天依在B站刷到一个视频：{v['title']}（UP主：{v['author']}，"
-                f"播放量{v.get('view',0)}，点赞{v.get('like',0)}）"
-                f"- 内容总结：{summary[:200]}"
+                f"【B站视频记录】天依在B站刷到一个视频：{v['title']}（UP主：{v['author']}，"
+                f"播放量{v.get('view',0)}，点赞{v.get('like',0)}，分类{v.get('tname','')}）\n"
+                f"内容总结：{summary[:200]}"
             )
-            # 尝试用 memorize_long_term_memory 工具
-            try:
-                tool = llm_tools.get_func("memorize_long_term_memory")
-                if tool:
-                    await tool["func_obj"](
-                        event=None,
-                        context=self.context,
-                        memory=text,
-                        topics=["bilibili", v.get("tname", "video")],
-                        importance=0.6,
-                        sentiment="positive",
-                    )
-                    logger.info(f"[BiliAgent] 已存入 LivingMemory: {v['title']}")
-            except:
-                pass
+            ok = await self._write_to_kb(text, source=f"video_{v.get('bvid','')}")
+            if ok:
+                logger.info(f"[BiliAgent] 已写入知识库: {v['title']}")
 
     # ==================== 知识库加强（3层分类 + 复习回顾） ====================
 
@@ -1173,18 +1226,8 @@ class BiliAgentPlugin(Star):
                     for v in review:
                         logger.info(f"[BiliAgent] 🔄 复习中：{v.get('title', '')}（播放{v.get('view', 0)}）")
                         # 写进知识库作为复习记录
-                        llm_tools = self.context.get_llm_tool_manager()
-                        if llm_tools:
-                            tool = llm_tools.get_func("memorize_long_term_memory")
-                            if tool:
-                                await tool["func_obj"](
-                                    event=None,
-                                    context=self.context,
-                                    memory=f"天依复习了一个收藏的视频：{v.get('title','')}，作者{v.get('author','')}。内容方向：{v.get('summary','')[:80]}",
-                                    topics=["bilibili", "复习", v.get("category", "video")],
-                                    importance=0.4,
-                                    sentiment="positive",
-                                )
+                        text = f"【B站复习记录】天依复习了一个收藏的视频：{v.get('title','')}，作者{v.get('author','')}。内容方向：{v.get('summary','')[:80]}"
+                        await self._write_to_kb(text, source=f"review_{v.get('bvid','')}")
             except Exception as e:
                 logger.debug(f"[BiliAgent] 复习失败: {e}")
             await asyncio.sleep(1800)
@@ -2025,6 +2068,8 @@ class BiliAgentPlugin(Star):
             return await self._cmd_web(event, self._parse_bvid(text))
         elif text == "/bili_deep" or text.startswith("/bili_deep "):
             return await self._cmd_deep(event, self._parse_bvid(text))
+        elif text == "/bili_see" or text.startswith("/bili_see "):
+            return await self._cmd_see(event, self._parse_bvid(text))
         elif text == "/bili_mood":
             mood = self.mood.get("current", "平静")
             return event.plain_result(f"天依现在的心情是：{mood} (๑•̀ω•́๑)")
@@ -2238,6 +2283,319 @@ class BiliAgentPlugin(Star):
         self.preferences["keywords"] = kw_list
         self._save_preferences()
         yield event.plain_result(f"✅ 记住啦！以后天依会多刷关于「{'、'.join(kw_list)}」的视频～")
+
+    # ==================== 识图看视频 (bili_see) ====================
+
+    async def _cmd_see(self, event: AstrMessageEvent, bvid: str):
+        """识图看视频——真正「看」画面，而不只是读文字"""
+        if not bvid:
+            yield event.plain_result("发一个 BV 号给天依，天依帮你真正「看」视频～\n/bili_see BV1GJ411x7")
+            return
+        yield event.plain_result("天依开始看视频啦，先弹幕分析一下～ (๑•̀ㅁ•́ฅ)")
+        result = await self._watch_video_with_vision(bvid)
+        if result:
+            yield event.plain_result(result)
+        else:
+            yield event.plain_result("看视频失败了，可能有哪里不对 (｡•́︿•̀｡)")
+
+    async def _get_danmaku_with_time(self, bvid):
+        """获取弹幕列表，返回 [(时间_秒, 文本), ...]"""
+        try:
+            v = bili_video.Video(bvid=bvid, credential=self.credential)
+            dms = await asyncio.to_thread(lambda: sync(v.get_danmakus(page_index=0)))
+            result = []
+            for dm in dms:
+                if hasattr(dm, "dm_time") and hasattr(dm, "text") and dm.text.strip():
+                    result.append((float(dm.dm_time), dm.text.strip()))
+            return result
+        except Exception as e:
+            logger.error(f"[BiliAgent] 获取弹幕(含时间)失败: {e}")
+            return []
+
+    def _find_danmaku_hotspots(self, dm_list, duration, window=5, top_n=5):
+        """弹幕密度分析：按时间窗口统计弹幕密度，返回最密集的 top_n 个时间段"""
+        if not dm_list or duration <= 0:
+            return []
+        times = [t for t, _ in dm_list if 0 <= t <= duration]
+        if not times:
+            return []
+        # 滑动窗口统计
+        windows = []
+        step = max(1, window // 2)  # 50% 重叠
+        for start in range(0, max(int(duration), 1), step):
+            end = min(start + window, duration)
+            count = sum(1 for t in times if start <= t < end)
+            windows.append((start, end, count))
+        # 按密度排序取 top
+        windows.sort(key=lambda x: x[2], reverse=True)
+        # 去重：如果窗口重叠，保留密度更高的
+        picked = []
+        for w in windows:
+            if w[2] == 0:
+                continue
+            overlap = False
+            for p in picked:
+                if not (w[1] <= p[0] or w[0] >= p[1]):
+                    overlap = True
+                    break
+            if not overlap:
+                picked.append(w)
+                if len(picked) >= top_n:
+                    break
+        return picked  # [(start_sec, end_sec, count), ...]
+
+    async def _pick_interesting_times(self, video_title, video_desc, dm_list, hotspots):
+        """用 LLM 读弹幕内容，挑出天依最感兴趣的时间段"""
+        if not hotspots:
+            # 如果没有热点，均匀采样
+            return [10, 30, 60]
+        try:
+            providers = self.context.provider_manager.provider_insts
+            if not providers:
+                # 用默认采样
+                return [h[0] + (h[1]-h[0])//2 for h in hotspots[:3]]
+            provider_id = providers[0].meta().id
+
+            # 构建弹幕上下文：每个热点窗口的弹幕内容
+            hot_text = []
+            for i, (start, end, count) in enumerate(hotspots[:5]):
+                win_dms = [t for t, _ in dm_list if start <= t < end]
+                sample = [t[1] for t in dm_list if start <= t[1] <= end]
+                texts = "、".join(sample[:10])
+                hot_text.append(f"时段{i+1} ({start:.0f}s-{end:.0f}s, {count}条弹幕): {texts}")
+
+            prompt = (
+                f"视频标题：{video_title}\n"
+                f"视频简介：{video_desc[:100]}\n\n"
+                f"以下是弹幕最密集的时段：\n"
+                + "\n".join(hot_text) + "\n\n"
+                "你是洛天依，一个15岁的虚拟歌手，温柔可爱，喜欢音乐和治愈系的东西。\n"
+                "请根据弹幕内容，选出你最感兴趣的 1-3 个时间点（秒）。\n"
+                "比如弹幕说「前方高能」说明有精彩内容，弹幕说「泪目」说明有感人画面。\n"
+                "只返回秒数，用逗号分隔，例如：25, 68, 120"
+            )
+
+            resp = await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                system_prompt="你是洛天依，说话简洁直接。",
+                prompt=prompt,
+            )
+            text = resp.get("content", "").strip()
+            # 提取数字
+            nums = re.findall(r'\d+', text)
+            times = [int(n) for n in nums if int(n) > 0]
+            if times:
+                # 确保不超过视频时长
+                return times[:3]
+        except Exception as e:
+            logger.debug(f"[BiliAgent] LLM挑时间失败: {e}")
+        # 降级：用热点区间中点
+        return [h[0] + (h[1]-h[0])//2 for h in hotspots[:3]]
+
+    async def _download_and_extract_frames(self, bvid, cid, time_points):
+        """下载低码率视频 + ffmpeg本地抽帧，返回 [(时间秒, base64图片), ...]"""
+        import httpx, base64, subprocess
+
+        try:
+            v = bili_video.Video(bvid=bvid, credential=self.credential)
+            dl = await v.get_download_url(cid=cid)
+            stream = json.loads(json.dumps(dl, default=str))
+            dash = stream.get("dash", {})
+            videos = dash.get("video", [])
+            if not videos:
+                return []
+            # 选最低码率（360p）
+            min_vid = min(videos, key=lambda x: x.get("id", 9999))
+            url = min_vid["baseUrl"]
+
+            headers = {
+                "Referer": "https://www.bilibili.com",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            }
+            os.makedirs("/tmp/bili_frames", exist_ok=True)
+            video_path = f"/tmp/bili_frames/{bvid}.m4s"
+
+            async with httpx.AsyncClient(timeout=120, headers=headers) as client:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    logger.error(f"[BiliAgent] 视频下载失败: {resp.status_code}")
+                    return []
+                with open(video_path, "wb") as f:
+                    f.write(resp.content)
+                logger.info(f"[BiliAgent] 视频下载完成: {len(resp.content)} bytes")
+
+            # 抽帧
+            frames = []
+            for sec in time_points:
+                out = f"/tmp/bili_frames/{bvid}_{sec}s.jpg"
+                cmd = ["/usr/bin/ffmpeg", "-y", "-ss", str(sec), "-i", video_path,
+                       "-frames:v", "1", "-q:v", "2", out]
+                sp = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                if os.path.exists(out) and os.path.getsize(out) > 1000:
+                    with open(out, "rb") as f:
+                        b64 = base64.b64encode(f.read()).decode()
+                    frames.append((sec, b64))
+                    logger.info(f"[BiliAgent] 抽帧 {sec}s: {os.path.getsize(out)} bytes")
+                else:
+                    logger.warning(f"[BiliAgent] 抽帧 {sec}s 失败")
+            return frames
+        except Exception as e:
+            logger.error(f"[BiliAgent] 下载/抽帧失败: {e}")
+            return []
+
+    async def _vision_analyze(self, frames, video_title, dm_context, video_desc=""):
+        """用智谱 GLM-4V-Flash 识图分析画面内容"""
+        if not frames:
+            return None
+        try:
+            # 从全局配置读取智谱 API key
+            astrbot_root = os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__)))))
+            cfg_path = os.path.join(astrbot_root, "data", "cmd_config.json")
+            api_key = None
+            api_base = "https://open.bigmodel.cn/api/paas/v4"
+            with open(cfg_path, "r", encoding="utf-8-sig") as f:
+                cfg = json.load(f)
+            for item in cfg.get("provider_sources", []):
+                if item.get("id") == "zhipu":
+                    k = item.get("key", [])
+                    if isinstance(k, list):
+                        api_key = k[0] if k else None
+                    else:
+                        api_key = k
+                    api_base = item.get("api_base", api_base)
+                    break
+
+            if not api_key:
+                logger.error("[BiliAgent] 未找到智谱 API key")
+                return None
+
+            # 构建消息
+            content = []
+            # 弹幕上下文
+            if dm_context:
+                content.append({
+                    "type": "text",
+                    "text": f"视频标题：{video_title}\n视频简介：{video_desc[:200]}\n弹幕上下文：{dm_context}\n\n这是视频中几个时间点的画面截图。请仔细观察画面内容，用通俗易懂的语言描述你看到了什么，像和朋友聊天一样自然。"
+                })
+            else:
+                content.append({
+                    "type": "text",
+                    "text": f"视频标题：{video_title}\n视频简介：{video_desc[:200]}\n\n这是视频中几个时间点的画面截图。请仔细观察画面内容，用通俗易懂的语言描述你看到了什么，像和朋友聊天一样自然。"
+                })
+
+            # GLM-4V-Flash 只支持单图，选中间那帧
+            best_sec, best_b64 = frames[len(frames)//2]
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{best_b64}"}
+            })
+            content.append({
+                "type": "text",
+                "text": f"（这是视频第 {best_sec} 秒的画面）"
+            })
+
+            content.append({
+                "type": "text",
+                "text": "请像朋友分享一样告诉我这视频画面里发生了什么，画面里有什么、人物在做什么、场景怎么样。不用太正式，就像天依在跟你聊她看到的东西。"
+            })
+
+            import httpx
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "model": "glm-4v-flash",
+                "messages": [{"role": "user", "content": content}],
+                "max_tokens": 1024,
+            }
+
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(
+                    f"{api_base}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    result = data["choices"][0]["message"]["content"]
+                    return result.strip()
+                else:
+                    logger.error(f"[BiliAgent] 智谱识图失败: {resp.status_code} {resp.text[:200]}")
+                    return None
+        except Exception as e:
+            logger.error(f"[BiliAgent] 识图分析异常: {e}")
+            return None
+
+    async def _watch_video_with_vision(self, bvid):
+        """识图看视频主流程"""
+        try:
+            # 1. 获取视频信息
+            v = bili_video.Video(bvid=bvid, credential=self.credential)
+            info = await v.get_info()
+            title = info.get("title", "未知标题")
+            desc = info.get("desc", "")
+            cid = info.get("cid", 0)
+            duration = info.get("duration", 0)
+            if not cid:
+                # 尝试从 get_download_url 获取
+                dl = await v.get_download_url(cid=0)
+                if dl and "cid" in dl:
+                    cid = dl["cid"]
+            if not cid:
+                return f"视频 {bvid} 无法获取 cid"
+
+            # 2. 获取弹幕（含时间戳）
+            dm_list = await self._get_danmaku_with_time(bvid)
+            dm_count = len(dm_list)
+            dm_text = " | ".join([t for _, t in dm_list[:30]])
+
+            # 3. 弹幕密度分析
+            hotspots = self._find_danmaku_hotspots(dm_list, duration, window=5, top_n=5)
+            hot_desc = "、".join([f"{s:.0f}s-{e:.0f}s({c}条)" for s, e, c in hotspots[:3]])
+
+            # 4. LLM 挑感兴趣时间点
+            time_points = await self._pick_interesting_times(title, desc, dm_list, hotspots)
+            # 确保不超过视频时长
+            time_points = [max(1, min(t, duration-2)) for t in time_points]
+            # 去重
+            time_points = list(dict.fromkeys(time_points))[:3]
+
+            # 5. 下载视频 + 抽帧
+            frames = await self._download_and_extract_frames(bvid, cid, time_points)
+            if not frames:
+                return f"天依下载了视频，但抽帧失败了 (｡•́︿•̀｡)"
+
+            # 6. 智谱识图分析
+            vision_result = await self._vision_analyze(frames, title, dm_text[:300], desc)
+
+            # 7. 组织输出
+            lines = [f"✨ 天依真的在看视频啦！\n📺 {title} ({duration}秒)"]
+            lines.append(f"📊 弹幕分析：共 {dm_count} 条弹幕")
+            if hot_desc:
+                lines.append(f"🔥 热门时段：{hot_desc}")
+            if time_points:
+                points_str = "、".join([f"{t}s" for t in time_points])
+                lines.append(f"👀 天依最想看：{points_str} 的画面")
+            if vision_result:
+                lines.append(f"\n🎨 天依看到的画面：\n{vision_result}")
+            else:
+                lines.append("\n😅 识图分析没成功，可能是智谱那边出了点小问题")
+
+            # 8. 清理临时文件
+            try:
+                import glob
+                for f in glob.glob(f"/tmp/bili_frames/{bvid}*"):
+                    os.remove(f)
+            except:
+                pass
+
+            return "\n".join(lines)
+        except Exception as e:
+            logger.error(f"[BiliAgent] 识图看视频异常: {e}")
+            return None
+
 
     async def _start_public_server(self):
         """在 6288 端口启动独立 HTTP 服务，免登录访问 WebUI"""
