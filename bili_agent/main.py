@@ -2137,10 +2137,20 @@ class BiliAgentPlugin(Star):
             if not boost:
                 return
 
+            # 情绪关键词过期检查：超过 4 小时自动清理
+            now_ts = time.time()
+            expire_ts = self.preferences.get("mood_boost_expire", 0)
+            if now_ts > expire_ts:
+                self.preferences["mood_boost"] = []
+                existing_boost = []
+            else:
+                existing_boost = self.preferences.get("mood_boost", [])
+            # 设下一次过期时间（4小时后）
+            self.preferences["mood_boost_expire"] = now_ts + 14400
+
             # 把情绪关键词临时加到偏好里（但不覆盖用户原有偏好）
             current = set(self.preferences.get("keywords", []))
             new_boost = [kw for kw in boost if kw not in current]
-            existing_boost = self.preferences.get("mood_boost", [])
             if max_boost > 0:
                 # 保留旧的情绪关键词（先进先出裁掉超出的），再加上新词
                 merged = list(existing_boost) + new_boost
