@@ -40,5 +40,20 @@
     "type": "string",
     "default": "natural",
     "items": ["light", "natural", "none"]
+  },
+  "trend_days": {
+    "description": "情绪趋势统计天数（洞察你近 N 天的情绪状态，用于调整回复语气）",
+    "type": "int",
+    "default": 7
+  },
+  "gentle_mode_enabled": {
+    "description": "温柔模式开关（近期情绪偏低落时自动切换为更温柔的语气）",
+    "type": "bool",
+    "default": true
+  },
+  "gentle_threshold": {
+    "description": "温柔模式触发阈值（负面情绪占比超过该比例即触发，0-1）",
+    "type": "float",
+    "default": 0.5
   }
 }
