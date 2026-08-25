@@ -284,6 +284,7 @@ class SelfEvolutionPlugin(Star):
         self._private_umo_cache = {}  # 最近见过的私聊会话来源 {private_user_id: unified_msg_origin}
         self._scope_registry_touch_cache = {}  # 会话范围持久化防抖 {scope_id: last_touch_timestamp}
         self._last_cache_cleanup = 0.0  # 上次缓存清理时间
+        self._emotion_peak_cooldown = {}  # 情绪峰值写入冷却 {user_id: last_write_timestamp}
 
     def _cleanup_stale_caches(self):
         """清理过期缓存条目，防止无限膨胀。"""
@@ -446,6 +447,13 @@ class SelfEvolutionPlugin(Star):
             weight = float(data.get("weight", 0.5) or 0.5)
             if not user_id or not emotion or emotion == "neutral":
                 return
+
+            # 冷却检查：同一用户 5 分钟内不重复写入
+            now = time.time()
+            last = self._emotion_peak_cooldown.get(user_id, 0)
+            if now - last < 300:
+                return
+            self._emotion_peak_cooldown[user_id] = now
 
             # scope_id 缺省时按私聊规则推导
             if not scope_id:
