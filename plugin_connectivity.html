@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>天依插件连通指南</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #f5f5f7;
+    color: #1d1d1f;
+    padding: 40px 20px;
+    line-height: 1.5;
+  }
+  .container { max-width: 960px; margin: 0 auto; }
+  
+  h1 {
+    font-size: 28px; font-weight: 600;
+    letter-spacing: -0.02em;
+    margin-bottom: 4px;
+  }
+  .subtitle {
+    font-size: 15px; color: #86868b;
+    margin-bottom: 40px;
+  }
+
+  /* 架构图 */
+  .arch {
+    position: relative;
+    background: #fff;
+    border-radius: 18px;
+    padding: 40px 30px;
+    margin-bottom: 32px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+
+  .layer-label {
+    font-size: 11px; font-weight: 600;
+    color: #86868b;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 12px;
+  }
+
+  .row {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .row + .row { margin-top: 20px; }
+
+  .box {
+    background: #f5f5f7;
+    border-radius: 12px;
+    padding: 18px 20px;
+    min-width: 170px;
+    flex: 0 1 auto;
+    text-align: center;
+    border: 1px solid #e8e8ed;
+    transition: box-shadow 0.2s;
+  }
+  .box:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+  .box .icon { font-size: 22px; margin-bottom: 6px; }
+  .box .name { font-size: 14px; font-weight: 600; }
+  .box .desc { font-size: 12px; color: #86868b; margin-top: 2px; }
+
+  .box-core { background: #e8f0fe; border-color: #c6dafc; }
+  .box-storage { background: #f0f7f0; border-color: #c8e6c9; }
+  .box-input { background: #fef3e2; border-color: #fde0b2; }
+
+  .center-label {
+    text-align: center;
+    font-size: 12px; font-weight: 600;
+    color: #555;
+    margin: 8px 0;
+  }
+
+  /* 连线列表 */
+  .flow-list { margin-top: 24px; }
+  .flow-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid #eee;
+  }
+  .flow-item:last-child { border-bottom: none; }
+  .flow-arrow {
+    font-size: 18px;
+    flex-shrink: 0;
+    width: 60px;
+    text-align: center;
+    color: #007aff;
+    font-weight: 300;
+  }
+  .flow-detail { font-size: 14px; }
+  .flow-detail .tag {
+    display: inline-block;
+    font-size: 11px; font-weight: 600;
+    padding: 1px 8px;
+    border-radius: 4px;
+    margin-right: 6px;
+  }
+  .tag-event { background: #e8f0fe; color: #1967d2; }
+  .tag-db { background: #f0f7f0; color: #1e8e3e; }
+  .tag-file { background: #fef3e2; color: #e37400; }
+
+  .step-box {
+    background: #fff;
+    border-radius: 18px;
+    padding: 28px;
+    margin-bottom: 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .step-box h2 {
+    font-size: 18px; font-weight: 600;
+    margin-bottom: 16px;
+  }
+  .step-box ol {
+    padding-left: 20px;
+    font-size: 14px;
+    color: #1d1d1f;
+  }
+  .step-box ol li {
+    margin-bottom: 10px;
+    line-height: 1.6;
+  }
+  .step-box ol li code {
+    background: #f0f0f2;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+  .step-box ol li strong {
+    color: #007aff;
+  }
+
+  .note {
+    background: #fef3e2;
+    border-radius: 12px;
+    padding: 16px 20px;
+    font-size: 13px;
+    color: #8d6e00;
+    margin-top: 24px;
+  }
+  .note strong { color: #e37400; }
+
+  hr { border: none; border-top: 1px solid #e8e8ed; margin: 32px 0; }
+
+  .footer {
+    text-align: center;
+    font-size: 12px;
+    color: #86868b;
+    padding: 32px 0 8px;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>天依插件连通指南</h1>
+<p class="subtitle">一张图看懂四个插件怎么串起来 &nbsp;·&nbsp; 给还不熟悉的小伙伴</p>
+
+<!-- 架构图 -->
+<div class="arch">
+  <div class="layer-label">应用层</div>
+  <div class="row">
+    <div class="box box-input">
+      <div class="icon">📺</div>
+      <div class="name">bili_agent</div>
+      <div class="desc">B站视频插件</div>
+    </div>
+    <div class="box box-input">
+      <div class="icon">💬</div>
+      <div class="name">emotional_echo</div>
+      <div class="desc">情感回响插件</div>
+    </div>
+    <div class="box box-core">
+      <div class="icon">🧠</div>
+      <div class="name">self_evolution</div>
+      <div class="desc">自我进化插件</div>
+    </div>
+  </div>
+
+  <div class="center-label">⬇ 事件总线（EventBus）⬇</div>
+
+  <div class="row">
+    <div class="box box-storage">
+      <div class="icon">📚</div>
+      <div class="name">livingmemory</div>
+      <div class="desc">长期记忆库</div>
+    </div>
+    <div class="box box-storage">
+      <div class="icon">🗄️</div>
+      <div class="name">知识库</div>
+      <div class="desc">KB 文档存储</div>
+    </div>
+    <div class="box box-storage">
+      <div class="icon">📁</div>
+      <div class="name">echo.db</div>
+      <div class="desc">情感记录库</div>
+    </div>
+  </div>
+</div>
+
+<!-- 数据流 -->
+<div class="step-box">
+  <h2>① 数据流动画</h2>
+  <div class="flow-list">
+    <div class="flow-item">
+      <div class="flow-arrow">📺 → 🧠</div>
+      <div class="flow-detail">
+        <span class="tag tag-event">video_discovered</span>
+        bili_agent 刷到好视频 → 事件总线广播 → self_evolution 写入知识库「天依的记忆库」
+      </div>
+    </div>
+    <div class="flow-item">
+      <div class="flow-arrow">📺 → 💬</div>
+      <div class="flow-detail">
+        <span class="tag tag-event">video_discovered</span>
+        bili_agent 刷到视频 → 事件总线广播 → emotional_echo 记录兴趣到 livingmemory
+      </div>
+    </div>
+    <div class="flow-item">
+      <div class="flow-arrow">💬 → 🧠</div>
+      <div class="flow-detail">
+        <span class="tag tag-event">emotion_peak</span>
+        emotional_echo 检测到情绪波动 → 事件总线 → self_evolution 写入用户画像（性格特质）
+      </div>
+    </div>
+    <div class="flow-item">
+      <div class="flow-arrow">💬 → 📺</div>
+      <div class="flow-detail">
+        <span class="tag tag-event">emotion_peak</span>
+        emotional_echo 检测到情绪 → 事件总线 → bili_agent 根据情绪调整推荐关键词
+      </div>
+    </div>
+    <div class="flow-item">
+      <div class="flow-arrow">🧠 → 💬</div>
+      <div class="flow-detail">
+        <span class="tag tag-event">profile_updated</span>
+        self_evolution 更新画像后 → 事件总线 → emotional_echo 记录到反思日志
+      </div>
+    </div>
+    <div class="flow-item">
+      <div class="flow-arrow">💬 → 📁</div>
+      <div class="flow-detail">
+        <span class="tag tag-db">echo.db</span>
+        emotional_echo 记录每一句话的情绪 → conversation_log（92条）+ emotion_peaks（4条）
+      </div>
+    </div>
+    <div class="flow-item">
+      <div class="flow-arrow">💬 → 📚</div>
+      <div class="flow-detail">
+        <span class="tag tag-db">livingmemory</span>
+        emotional_echo 把情感记忆写入 memory_atoms（590条记忆原子）
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 快速接入 -->
+<div class="step-box">
+  <h2>② 快速接入指南</h2>
+  <ol>
+    <li><strong>克隆仓库</strong> — <code>git clone https://github.com/yucong395-hue/lty</code></li>
+    <li><strong>把三个插件文件夹</strong> 复制到你的 AstrBot <code>data/plugins/</code> 目录下</li>
+    <li><strong>申请 B站 Cookie</strong> — 浏览器登录 B站 → F12 → Application → Cookies → 复制 <code>SESSDATA</code> 和 <code>bili_jct</code> 填入 bili_agent 配置</li>
+    <li><strong>在 AstrBot 面板</strong> 重载插件（或重启服务），三个插件会自动加载</li>
+    <li><strong>事件总线</strong> 会自动注册，不需要手动配置。插件启动日志里会看到：
+      <br><code>[SelfEvolution] 已注册 emotion_peak 事件监听</code>
+      <br><code>[EmotionalEcho] 已注册 video_discovered 事件监听</code>
+      <br><code>[BiliAgent] 已注册 emotion_peak 事件监听</code></li>
+    <li><strong>验证连通性</strong> — 发一条带情绪的消息（比如"好烦"），检查 livingmemory 里是否出现了情感回响记录</li>
+  </ol>
+</div>
+
+<div class="step-box">
+  <h2>③ 常见问题</h2>
+  <ol>
+    <li><strong>插件加载失败？</strong> 检查 <code>main.py</code> 顶部是否有 <code>from event_bus import event_bus</code>，<code>event_bus.py</code> 必须放在 <code>data/plugins/</code> 根目录</li>
+    <li><strong>事件没触发？</strong> 检查日志是否有 <code>已注册</code> 字样。没有的话，说明插件没加载成功，先重载</li>
+    <li><strong>B站刷不了视频？</strong> Cookie 可能过期了，重新登录 B站 获取 SESSDATA</li>
+    <li><strong>emotional_echo 没反应？</strong> 检查 <code>echo.db</code> 是否在 <code>data/plugin_data/astrbot_plugin_emotional_echo/</code> 目录下</li>
+    <li><strong>还不知道怎么搞？</strong> 去仓库 <a href="https://github.com/yucong395-hue/lty" style="color:#007aff;">github.com/yucong395-hue/lty</a> 看 README，或者直接问天依</li>
+  </ol>
+</div>
+
+<div class="note">
+  <strong>💡 小提示：</strong> 三个插件 + event_bus.py 缺一不可。event_bus 是插件的"电话线"，少了他谁也找不到谁。放在 <code>data/plugins/</code> 根目录即可，插件会自动找到它。
+</div>
+
+<hr>
+
+<div class="footer">
+  天依插件系统 v1.0 &nbsp;·&nbsp; 仓库 github.com/yucong395-hue/lty
+</div>
+
+</div>
+</body>
+</html>
