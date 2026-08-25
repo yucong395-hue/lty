@@ -22,9 +22,11 @@ class EventBus:
         self._handlers: dict[str, list[Callable]] = {}
 
     def on(self, event: str, handler: Callable[..., Coroutine | None]):
-        """注册事件监听器"""
+        """注册事件监听器（自动去重，防止热重载重复注册）"""
         if event not in self._handlers:
             self._handlers[event] = []
+        if any(h is handler for h in self._handlers[event]):
+            return
         self._handlers[event].append(handler)
         logger.info(f"[EventBus] 已注册监听: {event}")
 
