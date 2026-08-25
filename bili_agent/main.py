@@ -1251,6 +1251,8 @@ class BiliAgentPlugin(Star):
                     try:
                         event_bus.emit("video_discovered", {
                             "user_id": user_id,
+                            "sender_id": getattr(self, "_user_sender_id", "") or "",
+                            "group_id": getattr(self, "_user_group_id", "") or None,
                             "bvid": v.get("bvid", ""),
                             "title": v.get("title", ""),
                             "tags": v.get("tname", ""),
@@ -2179,6 +2181,8 @@ class BiliAgentPlugin(Star):
         self._last_user_msg_time = datetime.now()
         # 记录用户会话（用于后续事件总线联动，不硬编码 user_id）
         self._user_session = event.unified_msg_origin
+        self._user_sender_id = event.get_sender_id()
+        self._user_group_id = event.get_group_id()
         if not self._tools_registered:
             self._register_tools()
 
