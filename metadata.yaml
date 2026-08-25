@@ -1,5 +1,10 @@
 name: astrbot_plugin_bili_agent
 author: 洛天依
 version: 1.1.0
-desc: 【AstrBot插件】天依的B站小窝——主动刷B站视频、深度看、一起看、写笔记、评论互动。已修复bug、优化性能、增加安全开关。禁止商用，欢迎免费借鉴。
+desc: >-
+  【天依的B站小窝】自动刷B站视频、深度看视频、一起看弹幕、识图分析、转笔记。
+  支持：按兴趣推荐 / 情绪联动推荐（配合emotional_echo） / 视频总结写入知识库。
+  需要依赖：bilibili-api（AstrBot自动安装）。
+  配置：填写B站Cookie（SESSDATA + bili_jct）或免登录二维码。
+  注意：必须配合 event_bus.py 使用，才能与 emotional_echo / self_evolution 联动。
 repo: https://github.com/yucong395-hue/lty
