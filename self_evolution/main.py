@@ -421,6 +421,13 @@ class SelfEvolutionPlugin(Star):
             logger.info("[SelfEvolution] 插件卸载钩子触发：DAO 长连接已安全释放。")
         except Exception as e:
             logger.warning(f"[SelfEvolution] 释放资源异常: {e}")
+        # 清理事件总线注册
+        if _HAS_EVENT_BUS:
+            try:
+                event_bus.off("emotion_peak", self._on_emotion_peak)
+                logger.info("[SelfEvolution] 已清理 emotion_peak 事件注册")
+            except Exception:
+                pass
 
     # ── 事件总线处理器：情感峰值 → 画像微调（③ 连通性加强） ──
     async def _on_emotion_peak(self, event_name: str, data: dict):
