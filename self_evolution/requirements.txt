@@ -1,0 +1,1 @@
+# 依赖由 AstrBot 本体提供（apscheduler/faiss/rank-bm25/jieba），无需额外安装
