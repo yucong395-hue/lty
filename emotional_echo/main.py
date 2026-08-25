@@ -529,6 +529,8 @@ class EmotionalEchoPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
         user_id = event.unified_msg_origin
+        sender_id = event.get_sender_id()
+        group_id = event.get_group_id()
         text = event.message_str or ""
         if not text:
             return
@@ -563,6 +565,8 @@ class EmotionalEchoPlugin(Star):
                 try:
                     event_bus.emit("emotion_peak", {
                         "user_id": user_id,
+                        "sender_id": sender_id,
+                        "group_id": group_id,
                         "scope_id": user_id if user_id.startswith("private_") else "",
                         "emotion": tone,
                         "text": text,
@@ -859,6 +863,8 @@ class EmotionalEchoPlugin(Star):
             user_id = data.get("user_id", "")
             if not user_id:
                 return
+            sender_id = data.get("sender_id", "")
+            group_id = data.get("group_id") or None
             title = data.get("title", "")
             tags = data.get("tags", "")
             score = data.get("score", 0)
@@ -874,6 +880,8 @@ class EmotionalEchoPlugin(Star):
                 try:
                     event_bus.emit("emotion_peak", {
                         "user_id": user_id,
+                        "sender_id": sender_id,
+                        "group_id": group_id,
                         "scope_id": user_id if user_id.startswith("private_") else "",
                         "emotion": "interest",
                         "text": f"对视频感兴趣: {title}",
