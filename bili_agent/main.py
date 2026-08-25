@@ -1245,16 +1245,19 @@ class BiliAgentPlugin(Star):
             if ok:
                 logger.info(f"[BiliAgent] 已写入知识库: {v['title']}")
                 # 通知事件总线：emotional_echo 可以更新兴趣画像
-                try:
-                    event_bus.emit("video_discovered", {
-                        "user_id": "webchat:FriendMessage:webchat!洛天依!7083baa8-e117-4617-9b53-758eed0e7769",
-                        "bvid": v.get("bvid", ""),
-                        "title": v.get("title", ""),
-                        "tags": v.get("tname", ""),
-                        "score": v.get("score", 0),
-                    })
-                except Exception:
-                    pass
+                # 使用真实用户会话（不硬编码假 ID），无会话时跳过
+                user_id = self._user_session
+                if user_id:
+                    try:
+                        event_bus.emit("video_discovered", {
+                            "user_id": user_id,
+                            "bvid": v.get("bvid", ""),
+                            "title": v.get("title", ""),
+                            "tags": v.get("tname", ""),
+                            "score": v.get("score", 0),
+                        })
+                    except Exception:
+                        pass
 
     # ==================== 知识库加强（3层分类 + 复习回顾） ====================
 
@@ -2174,6 +2177,8 @@ class BiliAgentPlugin(Star):
 
     async def on_llm_request(self, event: AstrMessageEvent, req):
         self._last_user_msg_time = datetime.now()
+        # 记录用户会话（用于后续事件总线联动，不硬编码 user_id）
+        self._user_session = event.unified_msg_origin
         if not self._tools_registered:
             self._register_tools()
 
