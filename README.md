@@ -30,7 +30,7 @@
 |---|---|
 | 情绪感知 | 关键词 + cnsenti 双引擎检测，支持 happy/sad/angry/tired 等 |
 | 情感频道 | 轻声/欢呼/接住/自然 四频道，根据情绪自动切换 |
-| 情绪趋势洞察 | 近7天情绪统计，负面偏多时自动温柔模式（⑤加强） |
+| 情绪趋势洞察 | 近 N 天情绪统计（可配置 `trend_days`），负面偏多时自动温柔模式，阈值可调 |
 | 超长记忆 | SQLite 持久化，跨会话跨重启，记住每一句话 |
 | 隐藏触发器 | 深夜/疲惫/回归/重要日子自动感知，不刻意表演 |
 | 自我反思 | 对话后三问复盘，持续优化温度 |
@@ -71,6 +71,28 @@
    - 自动装失败就手动：`pip install bilibili-api`
 4. **B站登录**：配置里填 B站 Cookie（SESSDATA 等）
 5. **重载插件**：AstrBot 面板里重载或重启
+
+### ⚙️ 配置项一览（AstrBot 面板可调）
+
+| 插件 | 配置组 | 配置项 | 说明 |
+|---|---|---|---|
+| **bili_agent** | 自动刷视频 | `auto_browse_interval_minutes` | 刷视频间隔（默认30分钟） |
+| | | `max_daily_browse` | 每日浏览上限 |
+| | 情绪联动 | `mood_boost_enabled` | 情绪联动推荐开关 |
+| | | `max_boost_keywords` | 情绪关键词累计上限 |
+| | 兴趣偏好 | `keywords` / `exclude_keywords` | 感兴趣/不感兴趣的关键词 |
+| | | `min_view` / `min_like` | 最低播放量/点赞数门槛 |
+| **emotional_echo** | 基础 | `trend_days` | 情绪趋势统计天数（默认7天） |
+| | | `gentle_mode_enabled` | 温柔模式开关 |
+| | | `gentle_threshold` | 温柔模式触发阈值（0-1） |
+| | 记忆 | `memory_retention_days` | 记忆保留天数 |
+| | | `remember_every_word` | 全量记忆开关 |
+| | 回忆 | `recall_style` | 回忆呈现方式（light/natural/none） |
+| **self_evolution** | 画像 | `enable_emotion_peak_profile` | 情绪波动写入画像开关 |
+| | 记忆 | `memory_enabled` / `memory_fetch_page_size` | 记忆/知识库相关 |
+| | 社交 | `interject_enabled` | 主动插嘴开关 |
+
+> 💡 面板中修改后保存，**bili_agent 自动同步**到偏好，无需重启。其他插件重载后生效。
 
 ### ⚠️ 常见报错排查
 
