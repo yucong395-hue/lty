@@ -426,17 +426,12 @@ class SelfEvolutionPlugin(Star):
     async def _on_emotion_peak(self, event_name: str, data: dict):
         """
         监听 emotional_echo 的情感峰值事件，把情绪波动微调写入用户画像。
-        data 形如:
-        {
-          "user_id": "private_xxx" 或 "group_xxx_uid",
-          "scope_id": "private_xxx",
-          "emotion": "happy",
-          "text": "原话",
-          "weight": 0.8
-        }
         """
         try:
             data = data or {}
+            # 检查配置开关
+            if not self.config.get("enable_emotion_peak_profile", True):
+                return
             user_id = data.get("user_id", "")
             scope_id = data.get("scope_id", "")
             emotion = data.get("emotion", "")
