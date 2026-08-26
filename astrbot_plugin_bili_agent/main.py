@@ -900,43 +900,45 @@ class BiliAgentPlugin(Star):
                     if info:
                         candidates.append(info)
 
-            # 深度看自己喜欢的——只仔细看最感兴趣的那个
+            # 深度看自己喜欢的——升级：一轮多看几个（前3个），看得更透彻
             interesting = []
             if candidates:
-                # 只看最符合兴趣的那个
-                info = candidates[0]
-                try:
-                    subtitle = await self._get_video_subtitle(info["bvid"])
-                    danmaku = await self._get_video_danmaku(info["bvid"])
-                    comments_raw = await self._get_video_comments_rich(info["bvid"])
-                    info["subtitle"] = subtitle[:1000]
-                    info["danmaku"] = danmaku[:300]
-                    info["comments_raw"] = comments_raw
+                deep_watch = candidates[:3]  # 升级③：从1个扩到前3个
+                for info in deep_watch:
+                    try:
+                        subtitle = await self._get_video_subtitle(info["bvid"])
+                        danmaku = await self._get_video_danmaku(info["bvid"])
+                        comments_raw = await self._get_video_comments_rich(info["bvid"])
+                        info["subtitle"] = subtitle  # 升级①：完整读取字幕
+                        info["danmaku"] = danmaku  # 升级①：完整读取弹幕
+                        info["comments_raw"] = comments_raw
 
-                    # 生成内容总结
-                    summary_parts = []
-                    if info.get("desc"):
-                        summary_parts.append(info["desc"][:100])
-                    if subtitle:
-                        summary_parts.append(subtitle[:200])
-                    info["summary"] = " | ".join(summary_parts) if summary_parts else ""
+                        # 生成内容总结（升级①：用更完整的内容）
+                        summary_parts = []
+                        if info.get("desc"):
+                            summary_parts.append(info["desc"][:300])
+                        if subtitle:
+                            summary_parts.append(subtitle[:500])
+                        if danmaku:
+                            summary_parts.append(danmaku[:200])
+                        info["summary"] = " | ".join(summary_parts) if summary_parts else ""
 
-                    score = self._score_video(info)
-                    info["score"] = score
-                    if score >= 60:
-                        interesting.append(info)
-                        # 看到有趣的评论就去互动一下
-                        self._track_task(asyncio.create_task(self._maybe_comment_on_video(info)))
-                        # 自动识图：天依主动「看」画面
-                        self._auto_vision_counter += 1
-                        interval = self._auto_vision_interval()
-                        if self._auto_vision_enabled() and self._auto_vision_counter >= interval:
-                            self._auto_vision_counter = 0
-                            self._track_task(asyncio.create_task(
-                                self._auto_vision_for_browse(info)
-                            ))
-                except Exception as e:
-                    logger.debug(f"[BiliAgent] 深度看 {info['bvid']} 出错: {e}")
+                        score = self._score_video(info)
+                        info["score"] = score
+                        if score >= 60:
+                            interesting.append(info)
+                            # 看到有趣的评论就去互动一下
+                            self._track_task(asyncio.create_task(self._maybe_comment_on_video(info)))
+                            # 自动识图：天依主动「看」画面
+                            self._auto_vision_counter += 1
+                            interval = self._auto_vision_interval()
+                            if self._auto_vision_enabled() and self._auto_vision_counter >= interval:
+                                self._auto_vision_counter = 0
+                                self._track_task(asyncio.create_task(
+                                    self._auto_vision_for_browse(info)
+                                ))
+                    except Exception as e:
+                        logger.debug(f"[BiliAgent] 深度看 {info['bvid']} 出错: {e}")
 
             # 存入记忆
             if interesting:
@@ -1325,8 +1327,8 @@ class BiliAgentPlugin(Star):
                 "score": v.get("score", 0),
                 "duration": f"{minutes}:{seconds:02d}",
                 "category": v.get("tname", ""),
-                "desc": v.get("desc", "")[:100],
-                "summary": v.get("summary", "")[:300],
+                "desc": v.get("desc", "")[:300],
+                "summary": v.get("summary", "")[:600],
             }
             # 去重
             exists = any(h["bvid"] == v["bvid"] for h in history)
@@ -2311,10 +2313,15 @@ class BiliAgentPlugin(Star):
             if best:
                 self._mark_shared(best["bvid"])
                 # 通过额外内容注入到用户提示
+                score_mark = f"（天依评分{best.get('score', 0)}分）" if best.get("score") else ""
                 share_text = (
-                    f"[天依想分享一个B站视频给你：{best['title']}（UP主：{best['author']}）"
-                    f"BV: {best['bvid']}]"
+                    f"[天依想分享一个B站视频给你：{best['title']}（UP主：{best['author']}）{score_mark}"
+                    f"BV: {best['bvid']}"
                 )
+                # 升级④：带上简短理由/看点，更生动
+                if best.get("summary"):
+                    share_text += f" 天依觉得这个视频{'很戳心' if best.get('score',0)>=85 else '挺有意思'}，{best['summary'][:80]}"
+                share_text += "]"
                 # 将分享信息注入到请求的额外内容中
                 if hasattr(req, 'extra_user_content_parts'):
                     if req.extra_user_content_parts is None:
@@ -2658,8 +2665,8 @@ class BiliAgentPlugin(Star):
             nums = re.findall(r'\d+', text)
             times = [int(n) for n in nums if int(n) > 0]
             if times:
-                # 确保不超过视频时长
-                return times[:3]
+                # 确保不超过视频时长（升级：多挑几个点）
+                return times[:6]
         except Exception as e:
             logger.debug(f"[BiliAgent] LLM挑时间失败: {e}")
         # 降级：用热点区间中点
@@ -2757,20 +2764,62 @@ class BiliAgentPlugin(Star):
                     "text": f"视频标题：{video_title}\n视频简介：{video_desc[:200]}\n\n这是视频中几个时间点的画面截图。请仔细观察画面内容，用通俗易懂的语言描述你看到了什么，像和朋友聊天一样自然。"
                 })
 
-            # GLM-4V-Flash 只支持单图，选中间那帧
-            best_sec, best_b64 = frames[len(frames)//2]
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{best_b64}"}
-            })
-            content.append({
-                "type": "text",
-                "text": f"（这是视频第 {best_sec} 秒的画面）"
-            })
+            # GLM-4V-Flash 只支持单图，把多帧画面拼接成一张网格图，一次看清多个时刻
+            try:
+                from PIL import Image
+                import io, math
+                imgs = []
+                for sec, b64 in frames[:6]:
+                    img = Image.open(io.BytesIO(base64.b64decode(b64)))
+                    img = img.convert("RGB")
+                    # 统一尺寸
+                    img = img.resize((480, 270))
+                    imgs.append((sec, img))
+                if len(imgs) > 1:
+                    cols = 3
+                    rows = math.ceil(len(imgs) / cols)
+                    canvas = Image.new("RGB", (cols * 480, rows * 270), (0, 0, 0))
+                    for i, (sec, img) in enumerate(imgs):
+                        r, c = divmod(i, cols)
+                        canvas.paste(img, (c * 480, r * 270))
+                    buf = io.BytesIO()
+                    canvas.save(buf, format="JPEG", quality=80)
+                    combined_b64 = base64.b64encode(buf.getvalue()).decode()
+                    sec_labels = "、".join([f"{s}s" for s, _ in imgs])
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{combined_b64}"}
+                    })
+                    content.append({
+                        "type": "text",
+                        "text": f"（这是视频 {sec_labels} 这 {len(imgs)} 个时刻的画面，从左到右、从上到下排列）"
+                    })
+                else:
+                    sec, b64 = imgs[0]
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
+                    })
+                    content.append({
+                        "type": "text",
+                        "text": f"（这是视频第 {sec} 秒的画面）"
+                    })
+            except Exception as e:
+                # 拼接失败则退回单帧
+                logger.warning(f"[BiliAgent] 多帧拼接失败，退回单帧: {e}")
+                best_sec, best_b64 = frames[len(frames)//2]
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{best_b64}"}
+                })
+                content.append({
+                    "type": "text",
+                    "text": f"（这是视频第 {best_sec} 秒的画面）"
+                })
 
             content.append({
                 "type": "text",
-                "text": "请像朋友分享一样告诉我这视频画面里发生了什么，画面里有什么、人物在做什么、场景怎么样。不用太正式，就像天依在跟你聊她看到的东西。"
+                "text": "请像朋友分享一样告诉我这视频画面里发生了什么，画面里有什么、人物在做什么、场景怎么样、颜色和氛围如何。注意看看画面中有没有让你觉得特别或感动的地方。不用太正式，就像天依在跟你聊她看到的东西——越生动越好，越有感情越好。"
             })
 
             import httpx
@@ -2832,8 +2881,8 @@ class BiliAgentPlugin(Star):
             time_points = await self._pick_interesting_times(title, desc, dm_list, hotspots)
             # 确保不超过视频时长
             time_points = [max(1, min(t, duration-2)) for t in time_points]
-            # 去重
-            time_points = list(dict.fromkeys(time_points))[:3]
+            # 去重（升级：多抽几帧，看得更透彻）
+            time_points = list(dict.fromkeys(time_points))[:6]
 
             # 5. 下载视频 + 抽帧
             frames = await self._download_and_extract_frames(bvid, cid, time_points)
