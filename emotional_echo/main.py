@@ -34,8 +34,9 @@ from astrbot.api.star import Context, Star, register
 # 事件总线（跨插件通知）
 import sys
 _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
-if _PLUGIN_DIR not in sys.path:
-    sys.path.insert(0, _PLUGIN_DIR)
+_PLUGINS_DIR = os.path.dirname(_PLUGIN_DIR)  # event_bus.py 在插件同级目录
+if _PLUGINS_DIR not in sys.path:
+    sys.path.insert(0, _PLUGINS_DIR)
 from event_bus import event_bus
 
 # ═══════════════════════════════════════════════════════════════
