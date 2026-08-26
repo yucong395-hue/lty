@@ -989,8 +989,9 @@ class CrossSystemMemory:
     """尝试读取 LivingMemory 和知识库的记忆片段，失败不影响主流程"""
 
     def __init__(self):
+        _astrbot_root = os.path.dirname(os.path.dirname(os.path.dirname(_PLUGIN_DIR)))
         self._memory_paths = [
-            "/root/AstrBot/data/plugin_data/astrbot_plugin_livingmemory/livingmemory.db",
+            os.path.join(_astrbot_root, "data", "plugin_data", "astrbot_plugin_livingmemory", "livingmemory.db"),
         ]
 
     def fetch_recent_memories(self, user_id: str, limit: int = 3) -> list:
@@ -1040,7 +1041,8 @@ class CrossSystemMemory:
         try:
             results = []
             # 知识库实际在 LivingMemory 的 documents 表里
-            lm_path = "/root/AstrBot/data/plugin_data/astrbot_plugin_livingmemory/livingmemory.db"
+            _astrbot_root = os.path.dirname(os.path.dirname(os.path.dirname(_PLUGIN_DIR)))
+            lm_path = os.path.join(_astrbot_root, "data", "plugin_data", "astrbot_plugin_livingmemory", "livingmemory.db")
             if os.path.exists(lm_path):
                 conn = sqlite3.connect(lm_path)
                 conn.row_factory = sqlite3.Row
@@ -1062,7 +1064,12 @@ class CrossSystemMemory:
     def write_emotion_to_livingmemory(self, user_id: str, emotion: str, text: str, weight: float = 0.5) -> bool:
         """把情感峰值写回 LivingMemory 的 memory_atoms（情绪记忆双向联动）"""
         try:
-            lm_path = "/root/AstrBot/data/plugin_data/astrbot_plugin_livingmemory/livingmemory.db"
+            # 动态推导 AstrBot 根路径，兼容任何安装位置
+            _astrbot_root = os.path.dirname(os.path.dirname(os.path.dirname(_PLUGIN_DIR)))
+            lm_path = os.path.join(
+                _astrbot_root, "data", "plugin_data",
+                "astrbot_plugin_livingmemory", "livingmemory.db",
+            )
             if not os.path.exists(lm_path):
                 return False
             conn = sqlite3.connect(lm_path, timeout=5)
