@@ -31,16 +31,17 @@ from bilibili_api import comment as bili_comment
 from bilibili_api import session as bili_session
 
 # 事件总线（跨插件联动）
+# 动态推导插件目录位置，不硬编码，兼容任何 AstrBot 安装路径
 import sys
-_EVENT_BUS_PATH = "/root/AstrBot/data/plugins"
+_PLUGIN_NAME = "astrbot_plugin_bili_agent"
+_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+_EVENT_BUS_PATH = os.path.dirname(_PLUGIN_DIR)  # event_bus.py 在插件同级目录
 if _EVENT_BUS_PATH not in sys.path:
     sys.path.insert(0, _EVENT_BUS_PATH)
 from event_bus import event_bus
 
 # 配置目录：从插件位置动态推导，兼容任何 AstrBot 安装路径
 # <AstrBot根>/data/plugins/astrbot_plugin_bili_agent -> <AstrBot根>/data/plugin_data/astrbot_plugin_bili_agent
-_PLUGIN_NAME = "astrbot_plugin_bili_agent"
-_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 _astrbot_root = os.path.dirname(os.path.dirname(os.path.dirname(_PLUGIN_DIR)))
 CONFIG_DIR = os.environ.get(
     "BILI_AGENT_CONFIG_DIR",
@@ -116,6 +117,11 @@ class BiliAgentPlugin(Star):
             logger.info("[BiliAgent] 已注册 emotion_peak 事件监听")
         except Exception as e:
             logger.warning(f"[BiliAgent] 事件总线注册失败: {e}")
+
+    def _track_task(self, task: asyncio.Task):
+        """跟踪后台任务，terminate 时统一取消，已完成任务自动移除"""
+        self._bg_tasks.append(task)
+        task.add_done_callback(lambda t: self._bg_tasks.remove(t) if t in self._bg_tasks else None)
 
     async def terminate(self):
         """插件被禁用/重载时调用：取消所有后台任务，清理事件总线注册。"""
@@ -825,7 +831,7 @@ class BiliAgentPlugin(Star):
                     if score >= 60:
                         interesting.append(info)
                         # 看到有趣的评论就去互动一下
-                        asyncio.create_task(self._maybe_comment_on_video(info))
+                        self._track_task(asyncio.create_task(self._maybe_comment_on_video(info)))
                 except Exception as e:
                     logger.debug(f"[BiliAgent] 深度看 {info['bvid']} 出错: {e}")
 
@@ -1021,6 +1027,9 @@ class BiliAgentPlugin(Star):
             )
             # 记下已评论，不再重复评
             self._commented_videos.add(bvid)
+            # 保持集合不无限增长（最多 1000 条，超限保留最近 500）
+            if len(self._commented_videos) > 1000:
+                self._commented_videos = set(list(self._commented_videos)[-500:])
             self._save_state()
             logger.info(f"[BiliAgent] 在《{info['title']}》回复了 {best['member']} 的评论")
 
@@ -1337,8 +1346,11 @@ class BiliAgentPlugin(Star):
         }
 
     async def _mood_loop(self):
-        """心情自然波动：每15分钟微调"""
-        await asyncio.sleep(900)
+        """心情自然波动：每15分钟微调（间隔可通过配置 browse.mood_interval_seconds 调整）"""
+        cfg = self.config or {}
+        browse_cfg = cfg.get("browse", {}) if isinstance(cfg, dict) else {}
+        interval = int(browse_cfg.get("mood_interval_seconds", 900))
+        await asyncio.sleep(interval)
         while True:
             try:
                 delta = random.randint(-8, 8)
@@ -1356,7 +1368,7 @@ class BiliAgentPlugin(Star):
                     self.mood["current"] = "平静"
             except Exception as e:
                 logger.debug(f"[BiliAgent] 心情波动失败: {e}")
-            await asyncio.sleep(900)
+            await asyncio.sleep(interval)
 
     def _mood_style_string(self):
         """把心情转成回复风格提示词"""
@@ -2318,7 +2330,7 @@ class BiliAgentPlugin(Star):
             if self.uid:
                 yield event.plain_result(f"✅ B站登录成功！UID: {self.uid}\n现在天依可以自己去刷视频了～")
                 # 登录成功后立即刷一次
-                asyncio.create_task(self._auto_browse())
+                self._track_task(asyncio.create_task(self._auto_browse()))
             else:
                 yield event.plain_result("登录完成，但获取UID失败，试试重载插件")
         except Exception as e:
@@ -2914,7 +2926,7 @@ class BiliAgentPlugin(Star):
             app.router.add_get("/notes/{filepath:.*}", handle_notes)
 
             # 在后台启动
-            asyncio.create_task(self._run_public_server(app))
+            self._track_task(asyncio.create_task(self._run_public_server(app)))
             logger.info("[BiliAgent] 免登录面板已启动 → http://localhost:6288")
         except Exception as e:
             logger.warning(f"[BiliAgent] 免登录面板启动失败: {e}")
