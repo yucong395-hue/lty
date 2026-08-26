@@ -1,0 +1,114 @@
+{
+ "browse": {
+  "type": "object",
+  "description": "自动刷视频",
+  "hint": "让天依定时自己去刷B站视频。",
+  "items": {
+   "auto_browse_enabled": {
+    "description": "启用自动刷视频",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后，天依会每隔一段时间自动刷一轮B站推荐流，看到有趣的会跟你分享。"
+   },
+   "auto_browse_interval_minutes": {
+    "description": "刷视频间隔（分钟）",
+    "type": "int",
+    "default": 30,
+    "hint": "每隔多少分钟自动刷一次推荐流，建议 15-120 分钟。太频繁容易刷到重复视频。"
+   },
+   "max_daily_browse": {
+    "description": "每日浏览上限",
+    "type": "int",
+    "default": 30,
+    "hint": "天依每天最多主动刷多少个视频，防止刷太多。设为很大数字如999999则无上限。"
+   },
+   "mood_interval_seconds": {
+    "description": "情绪波动间隔（秒）",
+    "type": "int",
+    "default": 900,
+    "hint": "心情自然波动的间隔（秒），默认900秒（15分钟）。天依会在这个间隔里自然微调自己的小情绪，让推荐更贴合当时的心情。"
+   },
+   "auto_vision_enabled": {
+    "description": "启用自动识图（天依主动看画面）",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后，天依刷到好视频时会主动抽帧识图，真正「看」画面。会消耗智谱 API 额度。"
+   },
+   "auto_vision_interval": {
+    "description": "自动识图间隔（浏览次数）",
+    "type": "int",
+    "default": 3,
+    "hint": "每隔多少次浏览执行一次自动识图，避免频繁调用 API 消耗额度。默认每3次浏览做一次识图。"
+   }
+  }
+ },
+ "share": {
+  "type": "object",
+  "description": "主动分享",
+  "hint": "天依看到好看的视频，想不想主动告诉你。",
+  "items": {
+   "auto_share_enabled": {
+    "description": "启用主动分享",
+    "type": "bool",
+    "default": true,
+    "hint": "刷到评分高的有趣视频时，天依会在下次聊天时主动提给你。"
+   },
+   "min_share_score": {
+    "description": "分享最低评分",
+    "type": "int",
+    "default": 60,
+    "hint": "评分达到多少的视频才会被天依想分享给你（0-100）。"
+   }
+  }
+ },
+ "mood_boost": {
+  "type": "object",
+  "description": "情绪联动推荐",
+  "hint": "配合 emotional_echo 插件，心情低落时天依会主动刷你喜欢的视频来陪你。",
+  "items": {
+   "mood_boost_enabled": {
+    "description": "启用情绪联动",
+    "type": "bool",
+    "default": true,
+    "hint": "情绪波动（如低落、开心）时，天依会把对应情绪的关键词临时加入刷视频偏好。关闭后情绪联动失效，只按兴趣偏好推荐。"
+   },
+   "max_boost_keywords": {
+    "description": "情绪关键词上限",
+    "type": "int",
+    "default": 5,
+    "hint": "情绪联动累计的关键词最多保留多少个，超出会按先进先出清理，避免偏好被冲淡。"
+   }
+  }
+ },
+ "preferences": {
+  "type": "object",
+  "description": "兴趣偏好",
+  "hint": "告诉天依你喜欢看什么，天依就多刷什么。也可以在聊天里说「我喜欢看猫猫」来设置。",
+  "items": {
+   "keywords": {
+    "description": "感兴趣的关键词",
+    "type": "string",
+    "default": "",
+    "hint": "用逗号分隔，如：猫猫, 编程, 音乐。留空则使用天依的默认兴趣（音乐、治愈、猫猫等）。"
+   },
+   "exclude_keywords": {
+    "description": "不感兴趣的关键词",
+    "type": "string",
+    "default": "",
+    "hint": "用逗号分隔，如：恐怖, 惊悚。包含这些词的视频天依会直接跳过。"
+   },
+   "min_view": {
+    "description": "最低播放量",
+    "type": "int",
+    "default": 1000,
+    "hint": "低于这个播放量的视频天依会略过（太冷门可能质量不高）。"
+   },
+   "min_like": {
+    "description": "最低点赞数",
+    "type": "int",
+    "default": 100,
+    "hint": "低于这个点赞数的视频天依会略过。"
+   }
+  }
+ }
+}
