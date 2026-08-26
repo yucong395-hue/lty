@@ -1278,8 +1278,9 @@ class BiliAgentPlugin(Star):
     # ==================== 记忆存储 ====================
 
     async def _write_to_kb(self, content: str, source: str = "bili"):
-        """把内容直接写入「天依的记忆库」知识库（与 self_evolution 同一个库）。
+        """把视频内容写入「天依的视频观感库」（专门存放视频总结的独立知识库）。
 
+        与 self_evolution 的「天依的记忆库」分开，避免视频总结和会话记忆混在一起。
         不依赖 LLM 工具注册（之前 tool["func_obj"] 是错误写法，被 except 静默吞掉）。
         """
         try:
@@ -1287,9 +1288,14 @@ class BiliAgentPlugin(Star):
             if not kb_manager:
                 logger.debug("[BiliAgent] kb_manager 不可用，跳过知识库写入")
                 return False
-            kb = await kb_manager.get_kb_by_name("天依的记忆库")
+            # 优先写入专门的视频观感库
+            kb = await kb_manager.get_kb_by_name("天依的视频观感库")
             if not kb:
-                logger.debug("[BiliAgent] 未找到知识库「天依的记忆库」，跳过")
+                # 新库不存在则回退到旧库
+                logger.debug("[BiliAgent] 未找到「天依的视频观感库」，回退到「天依的记忆库」")
+                kb = await kb_manager.get_kb_by_name("天依的记忆库")
+            if not kb:
+                logger.debug("[BiliAgent] 未找到任何可用知识库，跳过")
                 return False
             file_name = f"bili_{source}_{int(time.time() * 1000)}.txt"
             await kb.upload_document(
@@ -1298,7 +1304,7 @@ class BiliAgentPlugin(Star):
                 file_type="txt",
                 pre_chunked_text=[content],
             )
-            logger.info(f"[BiliAgent] 已写入知识库「天依的记忆库」: {file_name}")
+            logger.info(f"[BiliAgent] 已写入知识库: {file_name}")
             return True
         except Exception as e:
             logger.debug(f"[BiliAgent] 知识库写入失败（不影响使用）: {e}")
