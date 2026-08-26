@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## [2026-08-27] 技能册（skills）收录进仓库
+
+- 新增 `skills/` 目录，收录天依的 5 个行为指南技能（bili-wander / emotional-echo / living-memory / self-evolution / karpathy-guidelines）
+- 每个技能为 `SKILL.md`（YAML frontmatter + Markdown 正文），零侵入不改插件代码
+- README.md 新增「技能册」章节，说明插件（能力）与技能（判断力）的拆分
+- 技能总说明见 `skills/README.md`
+
 ## [2026-08-27] emotional_echo 情感检测升级为 LLM 判断制
 
 - **emotional_echo**：情感检测从「关键词匹配」升级为「LLM 智能判断制」
