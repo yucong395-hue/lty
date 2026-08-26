@@ -1,12 +1,6 @@
 display_name: 自我进化 (Self-Evolution)
 name: astrbot_plugin_self_evolution
-desc: >-
-  【自我进化系统】用户画像管理 + 知识库记忆 + 情绪画像微调。
-  功能：自动建立用户画像（偏好/性格/习惯） / 知识库双向读写 /
-  每日记忆总结（cron 6:00） / 实时对话写入（on_llm_response钩子） /
-  情感联动：接收 emotional_echo 的情绪峰值，自动写入用户画像特质 /
-  事件通知：画像更新后广播 profile_updated 事件给其他插件。
-  依赖：AstrBot 内置（apscheduler/faiss/rank-bm25/jieba），无需额外安装。
+desc: CognitionCore 7.0 数字生命
 version: Ver 5.4.0
 author: renyus
 repo: https://github.com/yucong395-hue/lty
