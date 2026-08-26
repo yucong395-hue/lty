@@ -5,10 +5,14 @@
     "default": true
   },
   "emotion_detect_level": {
-    "description": "情绪检测灵敏度（low=少触发, medium=平衡, high=敏感）",
+    "description": "情绪检测灵敏度（也作为 LLM 置信度阈值：low=只认强烈情绪, medium=平衡, high=敏感），低灵敏度更省 API",
     "type": "string",
     "default": "medium",
-    "items": ["low", "medium", "high"]
+    "items": [
+      "low",
+      "medium",
+      "high"
+    ]
   },
   "remember_every_word": {
     "description": "记住用户的每一句话（全量记忆，开启后天依不会忘你说过的任何内容）",
@@ -39,7 +43,11 @@
     "description": "回忆呈现方式：light=轻提一句, natural=自然融入, none=不主动提",
     "type": "string",
     "default": "natural",
-    "items": ["light", "natural", "none"]
+    "items": [
+      "light",
+      "natural",
+      "none"
+    ]
   },
   "trend_days": {
     "description": "情绪趋势统计天数（洞察你近 N 天的情绪状态，用于调整回复语气）",
@@ -51,9 +59,19 @@
     "type": "bool",
     "default": true
   },
+  "night_gentle_enabled": {
+    "description": "深夜轻声模式（23点-6点情绪中性时自动用轻声频道，陪伴而不打扰）",
+    "type": "bool",
+    "default": true
+  },
   "gentle_threshold": {
     "description": "温柔模式触发阈值（负面情绪占比超过该比例即触发，0-1）",
     "type": "float",
     "default": 0.5
+  },
+  "llm_emotion_enabled": {
+    "description": "使用 LLM 智能判断情绪（更懂反讽/否定句/网感；关键词降级为兜底）",
+    "type": "bool",
+    "default": true
   }
 }

@@ -50,12 +50,29 @@ CHANNELS = {
 }
 
 EMOTION_KEYWORDS = {
-    "happy":    ["开心", "哈哈", "嘻嘻", "高兴", "好棒", "太好了", "喜欢", "爱了", "耶", "嘿嘿", "笑死", "好玩"],
-    "sad":      ["好累", "累了", "难受", "难过", "伤心", "哭", "委屈", "心累", "烦", "焦虑", "emo", "低落"],
-    "angry":    ["生气", "气死", "无语", "烦死了", "讨厌", "烦人", "恶心"],
-    "surprised":["哇", "真的吗", "没想到", "竟然", "天哪", "惊了", "离谱"],
-    "tired":    ["困", "熬夜", "失眠", "没睡好", "好困", "撑不住", "累死"],
+    "happy":    ["开心", "哈哈", "嘻嘻", "高兴", "好棒", "太好了", "喜欢", "爱了", "耶", "嘿嘿", "笑死", "好玩", "开心死了", "太棒了", "嘿嘿嘿", "快乐", "棒呆", "芜湖", "心情好", "开心!"],
+    "sad":      ["心累", "难受", "难过", "伤心", "哭", "委屈", "烦", "焦虑", "emo", "emo了", "低落", "好难过", "破防", "玉玉", "心情不好", "难过死了", "想哭", "无助", "失望", "没意思", "好烦", "算了"],
+    "angry":    ["生气", "气死", "无语", "烦死了", "讨厌", "烦人", "恶心", "气死我了", "太气了", "气死了", "气炸", "无语死了"],
+    "surprised":["哇", "真的吗", "没想到", "竟然", "天哪", "惊了", "离谱", "哇哦", "天呐", "不会吧", "好震惊", "惊呆", "真的假的", "啥情况"],
+    "tired":    ["困", "熬夜", "失眠", "没睡好", "好困", "好累", "累死", "好累啊", "好困啊", "困死了", "要睡了", "晚安", "睡醒", "没精神", "乏了", "眼皮打架", "撑不住", "扛不住", "想睡觉"],
 }
+
+# ═══════════════════════════════════════════════════════════════
+# LLM 情感判断（比关键词更懂反讽/否定句/网感）
+# ═══════════════════════════════════════════════════════════════
+VALID_EMOTIONS = {"happy", "sad", "angry", "tired", "anxious", "fear", "surprised", "neutral"}
+# LLM 置信度阈值（对应 emotion_detect_level 灵敏度）：low=只认强烈, medium=平衡, high=敏感
+LLM_MIN_WEIGHT_MAP = {"low": 0.75, "medium": 0.5, "high": 0.3}
+LLM_EMOTION_SYSTEM = (
+    "你是「天依」，一个15岁的虚拟歌手，温柔细腻，懂网感和反讽。"
+    "请判断用户这句话真实的情感倾向。注意："
+    "「我不累」「我没事」这种否定句不要判成 tired/sad；"
+    "「哈哈好无聊」「笑死但好烦」要看真正的情绪；"
+    "撒娇、阴阳怪气要看语境；单纯叙述事实判 neutral。"
+    "只输出一个 JSON 对象，格式："
+    "{\"emotion\":\"happy|sad|angry|tired|anxious|fear|surprised|neutral\",\"weight\":0到1,\"reason\":\"一句话原因\"}。"
+    "weight 表示情绪强度，neutral 的 weight 必须小于等于 0.3。不要输出 JSON 以外的任何内容。"
+)
 
 # ═══════════════════════════════════════════════════════════════
 # 存储层：SQLite（超长记忆，跨会话跨重启）
@@ -315,8 +332,9 @@ class EchoStore:
 # 情绪引擎
 # ═══════════════════════════════════════════════════════════════
 class EmotionEngine:
-    def __init__(self, store: EchoStore):
+    def __init__(self, store: EchoStore, night_gentle: bool = True):
         self.store = store
+        self.night_gentle = night_gentle
 
     def detect(self, text: str) -> str:
         """多关键词检测情绪"""
@@ -326,10 +344,10 @@ class EmotionEngine:
                     return emotion
         return "neutral"
 
-    def update(self, user_id: str, text: str):
-        """更新用户情绪状态机"""
+    def update(self, user_id: str, text: str, llm_emotion: str = "", llm_weight: float = 0.0, min_peak_weight: float = 0.5):
+        """更新用户情绪状态机（LLM 情感判断优先，关键词兜底）"""
         state = self.store.get_state(user_id)
-        emotion = self.detect(text)
+        emotion = llm_emotion or self.detect(text)
         now = time.time()
 
         state["interaction_count"] += 1
@@ -337,19 +355,28 @@ class EmotionEngine:
         state["last_active"] = now
         state["emotion"] = emotion
 
-        # 情绪 → 频道 & 情绪值
-        if emotion in ("sad", "angry", "tired"):
+        # 情绪 → 频道 & 情绪值（LLM 可能返回 anxious/fear，一并归入负向）
+        if emotion in ("sad", "angry", "tired", "anxious", "fear"):
             state["mood_score"] = max(0.0, state["mood_score"] - 0.15)
             state["channel"] = "holding"
-            self.store.add_peak(user_id, emotion, text, weight=0.9)
+            # LLM 置信度足够（或关键词路径）才记峰值，情绪太弱不打扰
+            if (not llm_emotion) or llm_weight >= min_peak_weight:
+                weight = llm_weight if (llm_emotion and llm_weight > 0) else 0.9
+                self.store.add_peak(user_id, emotion, text, weight=weight)
         elif emotion in ("happy", "surprised"):
             state["mood_score"] = min(1.0, state["mood_score"] + 0.1)
             state["channel"] = "cheerful"
-            self.store.add_peak(user_id, emotion, text, weight=0.85)
+            if (not llm_emotion) or llm_weight >= min_peak_weight:
+                weight = llm_weight if (llm_emotion and llm_weight > 0) else 0.85
+                self.store.add_peak(user_id, emotion, text, weight=weight)
         else:
             # 自然回归：向 0.5 缓慢收敛
             state["mood_score"] = state["mood_score"] * 0.95 + 0.5 * 0.05
-            state["channel"] = "natural"
+            # 深夜感知：23点-6点且情绪中性时自动切轻声频道，陪伴而不打扰
+            if self.night_gentle and (time.localtime().tm_hour >= 23 or time.localtime().tm_hour < 6):
+                state["channel"] = "gentle"
+            else:
+                state["channel"] = "natural"
 
         self.store.save_state(state)
         self.store.decay_peaks(user_id)
@@ -476,7 +503,12 @@ class EmotionalEchoPlugin(Star):
         os.makedirs(self.data_dir, exist_ok=True)
 
         self.store = EchoStore(os.path.join(self.data_dir, "echo.db"))
-        self.engine = EmotionEngine(self.store)
+        self.engine = EmotionEngine(self.store, night_gentle=config.get("night_gentle_enabled", True) if config else True)
+        # LLM 情感判断：LLM 优先、关键词兜底（可开关，灵敏度映射置信度阈值）
+        self.llm_emotion_enabled = bool(config.get("llm_emotion_enabled", True)) if config else True
+        self.llm_min_weight = LLM_MIN_WEIGHT_MAP.get(
+            (config or {}).get("emotion_detect_level", "medium"), 0.5)
+        self._llm_emotion_cache = {}  # text -> (emotion, weight)，避免重复消息反复耗 API
         self.learner = FeedbackLearner(self.store)
         self.reflection = ReflectionEngine(self.store)
         self.analyzer = EmotionAnalyzer()          # 小模型情感引擎（cnsenti）
@@ -539,9 +571,14 @@ class EmotionalEchoPlugin(Star):
         if not getattr(self, "echo_enabled", True):
             return
 
+        # LLM 情感判断（LLM 优先，理解反讽/否定句；失败时回关键词兜底）
+        llm_emotion, llm_weight = "", 0.0
+        if getattr(self, "llm_emotion_enabled", True):
+            llm_emotion, llm_weight = await self._detect_emotion_llm(text)
+
         # 记住每一句话（用 cnsenti 小模型做情感浓度分析）
         if self.remember_every:
-            emotion = self.engine.detect(text)
+            emotion = llm_emotion or self.engine.detect(text)
             tone = emotion
             emo_weight = 0.5
             if self.analyzer.available:
@@ -576,7 +613,7 @@ class EmotionalEchoPlugin(Star):
                 except Exception:
                     pass
 
-        self.engine.update(user_id, text)
+        self.engine.update(user_id, text, llm_emotion=llm_emotion, llm_weight=llm_weight, min_peak_weight=self.llm_min_weight)
 
         if user_id in self._last_response_len:
             self.learner.learn(user_id, text, self._last_response_len[user_id])
@@ -595,6 +632,60 @@ class EmotionalEchoPlugin(Star):
 
     # ── LLM 请求注入：情感底色 ──
     @filter.on_llm_request()
+    async def _detect_emotion_llm(self, text: str):
+        """LLM 情感判断：返回 (emotion, weight)，失败或无 LLM 时回 ("", 0.0) 走关键词兜底"""
+        text = (text or "").strip()[:200]
+        if not text:
+            return ("", 0.0)
+        cached = self._llm_emotion_cache.get(text)
+        if cached is not None:
+            return cached
+        try:
+            providers = self.context.provider_manager.provider_insts
+            provider_id = providers[0].meta().id if providers else None
+            if not provider_id:
+                return ("", 0.0)
+            resp = await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                system_prompt=LLM_EMOTION_SYSTEM,
+                prompt=f"用户消息：{text}\n\n只输出一个 JSON 对象，不要输出任何其他文字。",
+            )
+            raw = (resp.completion_text or "").strip()
+            emotion, weight = self._parse_llm_emotion(raw)
+            if len(self._llm_emotion_cache) > 300:
+                self._llm_emotion_cache.clear()
+            self._llm_emotion_cache[text] = (emotion, weight)
+            return emotion, weight
+        except Exception as e:
+            logger.debug(f"[EmotionalEcho] LLM 情感判断失败，回关键词兜底: {e}")
+            return ("", 0.0)
+
+    @staticmethod
+    def _parse_llm_emotion(raw: str):
+        """从 LLM 输出中稳健解析 JSON，返回 (emotion, weight)；异常时回 ("", 0.0)"""
+        import json
+        import re
+        if not raw:
+            return ("", 0.0)
+        m = re.search(r"\{.*\}", raw, re.S)
+        if not m:
+            return ("", 0.0)
+        try:
+            d = json.loads(m.group(0))
+        except Exception:
+            return ("", 0.0)
+        emo = str(d.get("emotion", "")).strip().lower()
+        if emo not in VALID_EMOTIONS:
+            return ("", 0.0)
+        try:
+            weight = float(d.get("weight", 0.0))
+        except Exception:
+            weight = 0.0
+        weight = max(0.0, min(1.0, weight))
+        if emo == "neutral":
+            weight = min(weight, 0.3)  # 中性情绪强度压到很低，避免误触发
+        return emo, weight
+
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         user_id = event.unified_msg_origin
         state = self.store.get_state(user_id)
@@ -869,10 +960,16 @@ class EmotionalEchoPlugin(Star):
             title = data.get("title", "")
             tags = data.get("tags", "")
             score = data.get("score", 0)
+            highlight = data.get("highlight", "")
+            mood = data.get("mood", "")
             if score >= 60 and title:
                 interest_text = f"刷到视频: {title}"
                 if tags:
                     interest_text += f" | 标签: {tags}"
+                if highlight:
+                    interest_text += f" | 亮点: {highlight}"
+                if mood:
+                    interest_text += f" | 天依心情: {mood}"
                 if getattr(self, "cross_memory", None):
                     self.cross_memory.write_emotion_to_livingmemory(
                         user_id, "interest", interest_text, min(1.0, score / 100)
