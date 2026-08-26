@@ -306,6 +306,7 @@ class BiliAgentPlugin(Star):
         if self._tools_registered:
             return
 
+        _module = self.__class__.__module__
         tools = [
             FunctionTool(
                 name="bilibili_search",
@@ -319,6 +320,7 @@ class BiliAgentPlugin(Star):
                     "required": ["keyword"]
                 },
                 handler=self._handle_search,
+                handler_module_path=_module,
             ),
             FunctionTool(
                 name="bilibili_watch_video",
@@ -331,6 +333,7 @@ class BiliAgentPlugin(Star):
                     "required": ["bvid"]
                 },
                 handler=self._handle_watch_video,
+                handler_module_path=_module,
             ),
             FunctionTool(
                 name="bilibili_recommend",
@@ -343,6 +346,7 @@ class BiliAgentPlugin(Star):
                     "required": []
                 },
                 handler=self._handle_recommend,
+                handler_module_path=_module,
             ),
             FunctionTool(
                 name="bilibili_trending",
@@ -355,6 +359,7 @@ class BiliAgentPlugin(Star):
                     "required": []
                 },
                 handler=self._handle_trending,
+                handler_module_path=_module,
             ),
             FunctionTool(
                 name="bilibili_watch_together",
@@ -367,6 +372,7 @@ class BiliAgentPlugin(Star):
                     "required": ["bvid"]
                 },
                 handler=self._handle_watch_together,
+                handler_module_path=_module,
             ),
             FunctionTool(
                 name="bilibili_set_preference",
@@ -382,6 +388,7 @@ class BiliAgentPlugin(Star):
                     "required": ["keywords"]
                 },
                 handler=self._handle_set_preference,
+                handler_module_path=_module,
             ),
         ]
 
@@ -440,13 +447,49 @@ class BiliAgentPlugin(Star):
             return 3
 
     async def _auto_vision_for_browse(self, info):
-        """自动识图：天依刷到好视频时主动抽帧看画面（后台任务，不阻塞主流程）"""
+        """自动识图：天依刷到好视频时主动抽帧看画面（后台任务，不阻塞主流程）
+        
+        先让 LLM 判断这个视频是不是天依「特别想看的」，
+        只有天依自己觉得喜欢才抽帧识图，否则跳过省 API。
+        """
         try:
             bvid = info.get("bvid", "")
             title = info.get("title", "未知")
+            author = info.get("author", "未知UP")
+            desc = info.get("desc", "")[:200]
+            duration = info.get("duration", 0)
+            score = info.get("score", 0)
             if not bvid:
                 return
-            logger.info(f"[BiliAgent] 🌸 天依主动识图看画面：{title}")
+
+            # 1. LLM 判断：天依喜不喜欢这个视频
+            prompt = (
+                f"视频标题：{title}\n"
+                f"UP主：{author}\n"
+                f"视频简介：{desc}\n"
+                f"时长：{duration}秒\n"
+                f"天依的兴趣度评分：{score}/100\n\n"
+                "你是「天依」，一个15岁的虚拟歌手，温柔感性，喜欢音乐、治愈系、可爱的事物、有情感的故事，也爱看沙雕整活。\n"
+                "请根据以上信息，判断这是不是你「特别想看画面」的视频。\n"
+                "只回答「想看」或「不想看」中的一个词。"
+            )
+            providers = self.context.provider_manager.provider_insts
+            provider_id = providers[0].meta().id if providers else None
+            if provider_id:
+                resp = await self.context.llm_generate(
+                    chat_provider_id=provider_id,
+                    system_prompt="你是天依，说话简洁直接。",
+                    prompt=prompt,
+                )
+                decision = (resp.get("content", "") or "").strip()
+            else:
+                decision = "想看"  # 没有 LLM 时降级为想看
+
+            if "想看" not in decision:
+                logger.info(f"[BiliAgent] 🌸 天依觉得「{title}」不太想仔细看画面，跳过识图")
+                return
+
+            logger.info(f"[BiliAgent] 🌸 天依想看「{title}」的画面，开始抽帧识图～")
             result = await self._watch_video_with_vision(bvid)
             if result:
                 info["vision"] = result
