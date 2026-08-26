@@ -1,8 +1,28 @@
 # CHANGELOG
 
-所有重要变更都会记录在这个文件中。
+## [2026-08-27] 文档全面完善
 
-格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+- **README.md** 重写：功能总表 + 安装教程 + 配置教程 + 生态闭环 + 常见问题
+- **DECLARATIONS.md** 新增：完整的许可、免责、隐私、第三方版权声明
+- 明确了自研插件（bili_agent / emotional_echo / event_bus）禁止商用、可学习借鉴
+- 澄清第三方插件（livingmemory / fishaudio / listen_music）版权归原作者
+- 补充数据安全与隐私说明
+
+## [2026-08-27] 视频总结写入独立知识库
+
+- bili_agent 视频观后感写入独立「天依的视频观感库」，与主记忆库分离
+- 修复 LLM 返回取值 bug（`resp.get` → `resp.completion_text`），观后感/识图/评论/@回复/弹幕高能点全部恢复正常
+- 知识库写入验证通过（观后感、画面描述、弹幕亮点齐全）
+
+## [2026-08-26] 插件优化与修复
+
+- **livingmemory**：新增最近对话兜底注入，重启/新会话也能想起刚才聊了什么
+- **emotional_echo**：情感关键词表增强，情绪识别更准
+- **self_evolution**：清理损坏测试文件，全部编译通过
+- **fishaudio_tts**：修复情感分析 LLM 取值 bug
+
+（以下为历史记录，详见 git log）
+
 
 ## [未发布] 2026-08-26
 
