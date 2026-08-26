@@ -13,13 +13,13 @@
    "auto_browse_interval_minutes": {
     "description": "刷视频间隔（分钟）",
     "type": "int",
-    "default": 30,
+    "default": 10,
     "hint": "每隔多少分钟自动刷一次推荐流，建议 15-120 分钟。太频繁容易刷到重复视频。"
    },
    "max_daily_browse": {
     "description": "每日浏览上限",
     "type": "int",
-    "default": 30,
+    "default": 60,
     "hint": "天依每天最多主动刷多少个视频，防止刷太多。设为很大数字如999999则无上限。"
    },
    "mood_interval_seconds": {
