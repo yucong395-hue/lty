@@ -1347,15 +1347,19 @@ class BiliAgentPlugin(Star):
             logger.debug(f"[BiliAgent] LivingMemory 写入失败（不影响使用）: {e}")
 
     async def _memorize_to_living_memory(self, videos):
-        """把视频总结写入「天依的记忆库」知识库"""
+        """把视频总结写入「天依的记忆库」知识库（升级：LLM生成真正的观后感，不只是标题简介）"""
         for v in videos[:2]:
-            summary = v.get("summary", "") or v.get("desc", "")[:100]
-            text = (
-                f"【B站视频记录】天依在B站刷到一个视频：{v['title']}（UP主：{v['author']}，"
-                f"播放量{v.get('view',0)}，点赞{v.get('like',0)}，分类{v.get('tname','')}）\n"
-                f"内容总结：{summary[:200]}"
-            )
-            ok = await self._write_to_kb(text, source=f"video_{v.get('bvid','')}")
+            try:
+                memory_text = await self._generate_video_memory(v)
+            except Exception as e:
+                logger.debug(f"[BiliAgent] 生成观后感失败，退回简化版: {e}")
+                summary = v.get("summary", "") or v.get("desc", "")[:100]
+                memory_text = (
+                    f"【B站视频记录】天依在B站刷到一个视频：{v['title']}（UP主：{v['author']}，"
+                    f"播放量{v.get('view',0)}，点赞{v.get('like',0)}，分类{v.get('tname','')}）\n"
+                    f"内容总结：{summary[:200]}"
+                )
+            ok = await self._write_to_kb(memory_text, source=f"video_{v.get('bvid','')}")
             if ok:
                 logger.info(f"[BiliAgent] 已写入知识库: {v['title']}")
                 # 通知事件总线：emotional_echo 可以更新兴趣画像
@@ -1374,6 +1378,60 @@ class BiliAgentPlugin(Star):
                         })
                     except Exception:
                         pass
+
+    async def _generate_video_memory(self, v):
+        """用 LLM 生成一段有温度、有实际内容的视频观后感，写入知识库"""
+        title = v.get("title", "")
+        author = v.get("author", "")
+        bvid = v.get("bvid", "")
+        desc = (v.get("desc") or "")[:400]
+        subtitle = (v.get("subtitle") or "")[:800]
+        danmaku = (v.get("danmaku") or "")[:400]
+        comments = v.get("comments_raw") or []
+        if isinstance(comments, list):
+            comments = " | ".join([str(c.get("message", ""))[:80] for c in comments[:5]])
+        else:
+            comments = str(comments)[:400]
+        vision = (v.get("vision") or "")[:500]
+        score = v.get("score", 0)
+        tname = v.get("tname", "")
+
+        prompt = (
+            f"视频标题：{title}\nUP主：{author}\n分类：{tname}\n天依评分：{score}/100\n\n"
+            f"视频简介：{desc}\n\n"
+            f"字幕摘要：{subtitle}\n\n"
+            f"弹幕摘选：{danmaku}\n\n"
+            f"热门评论：{comments}\n\n"
+            + (f"天依看到的画面：{vision}\n\n" if vision else "")
+            + "你是天依，15岁的虚拟歌手，温柔感性。请用你自己的话写下对这段视频的真实感受：\n"
+            "1. 这视频讲了什么/是什么类型的（2-3句）\n"
+            "2. 里面有哪个细节或情感最触动你（2-3句）\n"
+            "3. 你喜欢它哪里（1-2句）\n"
+            "像自己在笔记本上记感想一样自然，有温度，不用总结大纲，不用序号开头，总长度150-250字。"
+        )
+
+        providers = self.context.provider_manager.provider_insts
+        provider_id = providers[0].meta().id if providers else None
+        if provider_id:
+            resp = await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                system_prompt="你是天依，说话自然温柔，像写日记一样记录感想。",
+                prompt=prompt,
+            )
+            feeling = (resp.get("content", "") or "").strip()
+        else:
+            feeling = subtitle[:150]
+
+        text = (
+            f"【B站视频记录】天依在B站刷到一个视频：{title}（UP主：{author}，"
+            f"播放量{v.get('view',0)}，点赞{v.get('like',0)}，分类{tname}，评分{score}/100）\n"
+            f"BV：{bvid}\n"
+            f"视频简介：{desc[:200]}\n"
+            f"天依的观后感：{feeling}\n"
+            + (f"天依看到的画面：{vision}\n" if vision else "")
+            + f"弹幕亮点：{danmaku[:150]}"
+        )
+        return text
 
     # ==================== 知识库加强（3层分类 + 复习回顾） ====================
 
@@ -1433,8 +1491,10 @@ class BiliAgentPlugin(Star):
                 if review:
                     for v in review:
                         logger.info(f"[BiliAgent] 🔄 复习中：{v.get('title', '')}（播放{v.get('view', 0)}）")
-                        # 写进知识库作为复习记录
-                        text = f"【B站复习记录】天依复习了一个收藏的视频：{v.get('title','')}，作者{v.get('author','')}。内容方向：{v.get('summary','')[:80]}"
+                        # 写进知识库作为复习记录（升级：带上观后感/画面）
+                        vision = (v.get("vision") or "")[:200]
+                        feel = (v.get("summary") or "")[:120]
+                        text = f"【B站复习记录】天依复习了一个收藏的视频：{v.get('title','')}，作者{v.get('author','')}，评分{v.get('score',0)}/100。内容：{feel}{'。天依记得的画面：'+vision if vision else ''}"
                         await self._write_to_kb(text, source=f"review_{v.get('bvid','')}")
             except Exception as e:
                 logger.debug(f"[BiliAgent] 复习失败: {e}")
