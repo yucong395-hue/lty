@@ -525,7 +525,7 @@ class PluginConfig:
 
     @property
     def update_notify_repo(self):
-        return self._get_nested("update_notify", "update_notify_repo", "Renyus/astrbot_plugin_self_evolution")
+        return self._get_nested("update_notify", "update_notify_repo", "yucong395-hue/lty")
 
     @property
     def update_notify_branch(self):
