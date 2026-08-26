@@ -640,7 +640,7 @@
             "update_notify_repo": {
                 "description": "仓库路径",
                 "type": "string",
-                "default": "Renyus/astrbot_plugin_self_evolution",
+                "default": "yucong395-hue/lty",
                 "hint": "格式：owner/repo"
             },
             "update_notify_branch": {
