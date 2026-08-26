@@ -375,7 +375,7 @@ unfinished_cues TEXT DEFAULT '[]'
 
 ### 配置项
 
-- `update_notify_repo` — 仓库路径，格式 `owner/repo`（默认 `Renyus/astrbot_plugin_self_evolution`）
+- `update_notify_repo` — 仓库路径，格式 `owner/repo`（默认 `yucong395-hue/lty`）
 - `update_notify_branch` — 分支名（默认 `master`）
 - `update_notify_group_id` — 接收通知的群 ID 列表（群聊）
 - `update_notify_user_ids` — 接收通知的用户 ID 列表（私聊）
