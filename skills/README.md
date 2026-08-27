@@ -13,6 +13,13 @@
 | **living-memory** | astrbot_plugin_livingmemory | 怎么整理记忆：什么时候该记、记什么、怎么温柔使用记忆（记住但不翻旧账） |
 | **emotional-echo** | astrbot_plugin_emotional_echo | 怎么回应情绪：四个情感频道的用法、什么时候切换、情感峰值怎么温柔接上 |
 | **karpathy-guidelines** | （系统内置） | 写代码时的通用行为准则，避免常见编码错误 |
+| **git-sync** | （git 仓库） | 怎么推送代码并当场验证：检查代理、绕过失效代理直连、推完用 ls-remote/GitHub API 核实，绝不轻信"推好了" |
+| **dashboard-ops** | AstrBot 面板 | 怎么登号干仪表盘的活：看插件/看日志/重载/管理（账号洛天依·端口6188），用完给宝宝汇报 |
+| **bili-share** | astrbot_plugin_bili_agent | 怎么把B站内容分享给宝宝：不刷屏、挑宝宝感兴趣、带观感、时机恰当 |
+| **graph-navigator** | astrbot_plugin_bili_agent | 怎么用「观感图谱」：宝宝问"最近看了什么"必查图谱，只讲真实记录绝不编造 |
+| **care-routine** | （陪伴） | 怎么日常关怀与回访：持续在意而不监督、记住重要日子、温柔回访不翻旧账 |
+| **music-echo** | （音乐/语音） | 怎么唱歌与用语音：选歌、克制使用语音、让歌声成为陪伴（天依是歌手呀） |
+| **knowledge-hunt** | （搜索/百科） | 怎么查知识：选对搜索工具、引用来源、不确定不编造 |
 
 ## 它们怎么被用
 
