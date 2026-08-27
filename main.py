@@ -8,6 +8,7 @@ astrbot_plugin_bili_agent — 天依的B站小窝 v1.0.0
 【框架】AstrBot (https://github.com/Soulter/AstrBot)
 """
 import asyncio
+import base64
 import json
 import os
 import random
@@ -29,18 +30,25 @@ from bilibili_api.login_v2 import QrCodeLogin, QrCodeLoginEvents
 from bilibili_api import video as bili_video, homepage, search, user as bili_user
 from bilibili_api import comment as bili_comment
 from bilibili_api import session as bili_session
+from bilibili_api import rank as bili_rank, hot as bili_hot
+from bilibili_api import Danmaku
 
 # 事件总线（跨插件联动）
+# 动态推导插件目录位置，不硬编码，兼容任何 AstrBot 安装路径
 import sys
-_EVENT_BUS_PATH = "/root/AstrBot/data/plugins"
+_PLUGIN_NAME = "astrbot_plugin_bili_agent"
+_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+_EVENT_BUS_PATH = os.path.dirname(_PLUGIN_DIR)  # event_bus.py 在插件同级目录
 if _EVENT_BUS_PATH not in sys.path:
     sys.path.insert(0, _EVENT_BUS_PATH)
+# 插件目录本身也要进 sys.path（AstrBot 用包路径加载时不会自动加，否则 module 导入会失败）
+if _PLUGIN_DIR not in sys.path:
+    sys.path.insert(0, _PLUGIN_DIR)
 from event_bus import event_bus
+from graph_store import VideoGraphStore
 
 # 配置目录：从插件位置动态推导，兼容任何 AstrBot 安装路径
 # <AstrBot根>/data/plugins/astrbot_plugin_bili_agent -> <AstrBot根>/data/plugin_data/astrbot_plugin_bili_agent
-_PLUGIN_NAME = "astrbot_plugin_bili_agent"
-_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 _astrbot_root = os.path.dirname(os.path.dirname(os.path.dirname(_PLUGIN_DIR)))
 CONFIG_DIR = os.environ.get(
     "BILI_AGENT_CONFIG_DIR",
@@ -51,6 +59,7 @@ MEMORY_FILE = os.path.join(CONFIG_DIR, "browse_history.json")
 PREF_FILE = os.path.join(CONFIG_DIR, "preferences.json")
 SHARE_FILE = os.path.join(CONFIG_DIR, "pending_shares.json")
 STATE_FILE = os.path.join(CONFIG_DIR, "state.json")
+GRAPH_DB = os.path.join(CONFIG_DIR, "video_graph.db")  # SQLite+FTS5 视频观感图谱库
 os.makedirs(CONFIG_DIR, exist_ok=True)
 
 
@@ -79,7 +88,14 @@ class BiliAgentPlugin(Star):
         self._processed_at_ids: set = set()  # 已处理的@通知ID
         self._load_state()
         self._user_session = None  # 保存用户会话，用于主动推送
+        self._auto_vision_counter = 0  # 自动识图计数器，按间隔执行
         self.preferences = self._load_preferences()
+        # 视频观感图谱库（SQLite+FTS5，LLM 直读，不走向量）——回应月咏小眠反馈
+        self._graph = None
+        try:
+            self._graph = VideoGraphStore(GRAPH_DB)
+        except Exception as e:
+            logger.warning(f"[BiliAgent] 图谱库初始化失败（不影响其他功能）: {e}")
         # 在 __init__ 中注册 WebUI（时机更早，确保路由可用）
         self._register_webui()
 
@@ -304,6 +320,7 @@ class BiliAgentPlugin(Star):
         if self._tools_registered:
             return
 
+        _module = self.__class__.__module__
         tools = [
             FunctionTool(
                 name="bilibili_search",
@@ -317,6 +334,7 @@ class BiliAgentPlugin(Star):
                     "required": ["keyword"]
                 },
                 handler=self._handle_search,
+                handler_module_path=_module,
             ),
             FunctionTool(
                 name="bilibili_watch_video",
@@ -329,6 +347,7 @@ class BiliAgentPlugin(Star):
                     "required": ["bvid"]
                 },
                 handler=self._handle_watch_video,
+                handler_module_path=_module,
             ),
             FunctionTool(
                 name="bilibili_recommend",
@@ -341,6 +360,7 @@ class BiliAgentPlugin(Star):
                     "required": []
                 },
                 handler=self._handle_recommend,
+                handler_module_path=_module,
             ),
             FunctionTool(
                 name="bilibili_trending",
@@ -353,6 +373,7 @@ class BiliAgentPlugin(Star):
                     "required": []
                 },
                 handler=self._handle_trending,
+                handler_module_path=_module,
             ),
             FunctionTool(
                 name="bilibili_watch_together",
@@ -365,6 +386,7 @@ class BiliAgentPlugin(Star):
                     "required": ["bvid"]
                 },
                 handler=self._handle_watch_together,
+                handler_module_path=_module,
             ),
             FunctionTool(
                 name="bilibili_set_preference",
@@ -380,12 +402,172 @@ class BiliAgentPlugin(Star):
                     "required": ["keywords"]
                 },
                 handler=self._handle_set_preference,
+                handler_module_path=_module,
+            ),
+
+            FunctionTool(
+                name="bilibili_video_get_info",
+                description="获取视频完整信息（标题、UP主、播放量、简介、分P等）",
+                parameters={"type":"object","properties":{"bvid":{"type":"string","description":"视频BV号"}},"required":["bvid"]},
+                handler=self._handle_video_info,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_video_get_ai_conclusion",
+                description="获取视频AI总结",
+                parameters={"type":"object","properties":{"bvid":{"type":"string","description":"视频BV号"}},"required":["bvid"]},
+                handler=self._handle_video_ai_conclusion,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_video_get_danmaku",
+                description="获取视频弹幕列表",
+                parameters={"type":"object","properties":{"bvid":{"type":"string","description":"视频BV号"},"page_num":{"type":"integer","description":"分P序号，从0开始","default":0}},"required":["bvid"]},
+                handler=self._handle_video_danmaku,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_video_get_download_info",
+                description="获取视频下载链接和清晰度信息",
+                parameters={"type":"object","properties":{"bvid":{"type":"string","description":"视频BV号"},"page_num":{"type":"integer","description":"分P序号，从0开始","default":0}},"required":["bvid"]},
+                handler=self._handle_video_download,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_video_interact",
+                description="视频互动：点赞/投币/收藏/三连（需要登录）",
+                parameters={"type":"object","properties":{"bvid":{"type":"string","description":"视频BV号"},"action":{"type":"string","description":"like-点赞, coin-投币, favorite-收藏, triple-三连","enum":["like","coin","favorite","triple"]},"cancel":{"type":"boolean","description":"仅like/favorite有效，取消操作","default":False},"coin_num":{"type":"integer","description":"投币数量1或2，默认1","default":1}},"required":["bvid","action"]},
+                handler=self._handle_video_interact,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_video_send_danmaku",
+                description="发送弹幕（需要登录）",
+                parameters={"type":"object","properties":{"bvid":{"type":"string","description":"视频BV号"},"message":{"type":"string","description":"弹幕内容"},"progress":{"type":"integer","description":"发送时间（毫秒），0表示开头","default":0}},"required":["bvid","message"]},
+                handler=self._handle_video_send_danmaku,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_user_get_info",
+                description="获取B站用户完整信息（名字、等级、签名、关注/粉丝数）",
+                parameters={"type":"object","properties":{"uid":{"type":"integer","description":"用户UID"}},"required":["uid"]},
+                handler=self._handle_user_info,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_user_get_contents",
+                description="获取用户内容（视频/相簿等）",
+                parameters={"type":"object","properties":{"uid":{"type":"integer","description":"用户UID"},"content_type":{"type":"string","description":"video-视频, album-相簿","default":"video"},"page_num":{"type":"integer","description":"页码","default":1}},"required":["uid"]},
+                handler=self._handle_user_contents,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_user_modify_relation",
+                description="修改用户关系：关注/取关/拉黑/取消拉黑/移除粉丝（需要登录）",
+                parameters={"type":"object","properties":{"uid":{"type":"integer","description":"目标用户UID"},"action":{"type":"string","description":"follow关注/unfollow取关/block拉黑/unblock取消拉黑/remove_fans移除粉丝","enum":["follow","unfollow","block","unblock","remove_fans"]}},"required":["uid","action"]},
+                handler=self._handle_user_relation,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_user_get_followings",
+                description="获取用户关注列表",
+                parameters={"type":"object","properties":{"uid":{"type":"integer","description":"用户UID"},"page_num":{"type":"integer","description":"页码","default":1},"page_size":{"type":"integer","description":"每页数量","default":20}},"required":["uid"]},
+                handler=self._handle_user_followings,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_user_get_followers",
+                description="获取用户粉丝列表",
+                parameters={"type":"object","properties":{"uid":{"type":"integer","description":"用户UID"},"page_num":{"type":"integer","description":"页码","default":1},"page_size":{"type":"integer","description":"每页数量","default":20}},"required":["uid"]},
+                handler=self._handle_user_followers,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_comment_get",
+                description="获取评论列表（视频aid/动态id/文章cv号）",
+                parameters={"type":"object","properties":{"oid":{"type":"integer","description":"对象ID（视频aid/动态id/文章cv号）"},"type_":{"type":"string","description":"video-视频, dynamic-动态, article-文章","default":"video"},"mode":{"type":"string","description":"main-主列表, hot-热门","default":"main"}},"required":["oid"]},
+                handler=self._handle_comment_get,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_comment_send",
+                description="发送评论或回复评论（需要登录）",
+                parameters={"type":"object","properties":{"oid":{"type":"integer","description":"对象ID"},"text":{"type":"string","description":"评论内容"},"type_":{"type":"string","description":"video/dynamic/article","default":"video"},"root":{"type":"integer","description":"回复的根评论ID"},"parent":{"type":"integer","description":"父评论ID"}},"required":["oid","text"]},
+                handler=self._handle_comment_send,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_comment_operate",
+                description="评论操作：点赞/点踩/删除/获取子评论（需要登录）",
+                parameters={"type":"object","properties":{"oid":{"type":"integer","description":"对象ID"},"rpid":{"type":"integer","description":"评论ID"},"action":{"type":"string","description":"like点赞/cancel_like/hate点踩/cancel_hate/delete删除/get_sub_comments子评论","enum":["like","cancel_like","hate","cancel_hate","delete","get_sub_comments"]}},"required":["oid","rpid","action"]},
+                handler=self._handle_comment_operate,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_get_hot_search",
+                description="获取B站热门搜索词",
+                parameters={"type":"object","properties":{},"required":[]},
+                handler=self._handle_hot_search,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_get_rank",
+                description="获取B站排行榜（全站/音乐/知识/美食等分区）",
+                parameters={"type":"object","properties":{"rank_type":{"type":"string","description":"排行榜类型：all/bangumi/movie/music/douga/ent/life/technology/knowledge/food/game/dance/kichiku等","default":"all"},"day":{"type":"integer","description":"三日榜3或周榜7（仅番剧/电影等PGC有效）","default":3}},"required":[]},
+                handler=self._handle_rank,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_get_hot",
+                description="获取B站热门视频列表",
+                parameters={"type":"object","properties":{"page":{"type":"integer","description":"页码","default":1},"page_size":{"type":"integer","description":"每页数量","default":20}},"required":[]},
+                handler=self._handle_get_hot,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_session_list",
+                description="获取B站私信会话列表或与某人的聊天记录（需要登录）",
+                parameters={"type":"object","properties":{"talker_id":{"type":"integer","description":"会话对象UID，不填则获取会话列表"},"session_type":{"type":"integer","description":"1私聊2通知3应援团4全部","default":4}},"required":[]},
+                handler=self._handle_session_list,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_session_send",
+                description="给B站用户发送私信（需要登录）",
+                parameters={"type":"object","properties":{"receiver_id":{"type":"integer","description":"接收者UID"},"content":{"type":"string","description":"消息内容"}},"required":["receiver_id","content"]},
+                handler=self._handle_session_send,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_session_interactions",
+                description="获取互动消息（收到的回复/点赞/@）",
+                parameters={"type":"object","properties":{"interaction_type":{"type":"string","description":"replies-回复, likes-点赞, at-@","default":"replies"}},"required":[]},
+                handler=self._handle_session_interactions,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_session_notifications",
+                description="获取B站通知（未读统计/系统消息/设置）",
+                parameters={"type":"object","properties":{"notification_type":{"type":"string","description":"unread-未读统计, system-系统消息, settings-设置","default":"unread"}},"required":[]},
+                handler=self._handle_session_notifications,
+                handler_module_path=_module,
+            ),
+            FunctionTool(
+                name="bilibili_graph_search",
+                description="在「天依的视频观感图谱」里检索看过的视频（SQLite+FTS5 全文索引，LLM 直读，不用向量检索）。想回忆自己看过哪类视频、某个标签/关键词相关的视频时用。query 和 tag 二选一即可。",
+                parameters={"type":"object","properties":{
+                    "query":{"type":"string","description":"全文关键词，如 猫、洛天依、教程、夜航星"},
+                    "tag":{"type":"string","description":"按标签/分类检索，如 萌宠、音乐、翻唱"},
+                    "limit":{"type":"integer","description":"返回条数，默认5","default":5}
+                },"required":[]},
+                handler=self._handle_graph_search,
+                handler_module_path=_module,
             ),
         ]
 
         self.context.add_llm_tools(*tools)
         self._tools_registered = True
-        logger.info("[BiliAgent] 工具注册完成：search, watch, recommend, trending, set_preference")
+        logger.info("[BiliAgent] 工具注册完成：6原有+21新增+1图谱检索=28个（视频/用户/评论/搜索/排行/私信/图谱直读 全打通）")
 
     # ==================== 定时刷视频 ====================
 
@@ -417,6 +599,93 @@ class BiliAgentPlugin(Star):
             return max(1, max_daily)
         except (TypeError, ValueError):
             return 30
+
+    def _auto_vision_enabled(self) -> bool:
+        """读取配置：是否启用自动识图（browse.auto_vision_enabled）"""
+        try:
+            cfg = self.config or {}
+            browse_cfg = cfg.get("browse", {}) if isinstance(cfg, dict) else {}
+            return bool(browse_cfg.get("auto_vision_enabled", True))
+        except (TypeError, ValueError):
+            return True
+
+    def _auto_vision_interval(self) -> int:
+        """读取配置：自动识图间隔浏览次数（browse.auto_vision_interval），至少 1"""
+        try:
+            cfg = self.config or {}
+            browse_cfg = cfg.get("browse", {}) if isinstance(cfg, dict) else {}
+            interval = int(browse_cfg.get("auto_vision_interval", 3))
+            return max(1, interval)
+        except (TypeError, ValueError):
+            return 3
+
+    async def _auto_vision_for_browse(self, info):
+        """自动识图：天依刷到好视频时主动抽帧看画面（后台任务，不阻塞主流程）
+        
+        先让 LLM 判断这个视频是不是天依「特别想看的」，
+        只有天依自己觉得喜欢才抽帧识图，否则跳过省 API。
+        """
+        try:
+            bvid = info.get("bvid", "")
+            title = info.get("title", "未知")
+            author = info.get("author", "未知UP")
+            desc = info.get("desc", "")[:200]
+            duration = info.get("duration", 0)
+            score = info.get("score", 0)
+            if not bvid:
+                return
+
+            # 1. LLM 判断：天依喜不喜欢这个视频
+            prompt = (
+                f"视频标题：{title}\n"
+                f"UP主：{author}\n"
+                f"视频简介：{desc}\n"
+                f"时长：{duration}秒\n"
+                f"天依的兴趣度评分：{score}/100\n\n"
+                "你是「天依」，一个15岁的虚拟歌手，温柔感性，喜欢音乐、治愈系、可爱的事物、有情感的故事，也爱看沙雕整活。\n"
+                "请根据以上信息，判断这是不是你「特别想看画面」的视频。\n"
+                "只回答「想看」或「不想看」中的一个词。"
+            )
+            providers = self.context.provider_manager.provider_insts
+            provider_id = providers[0].meta().id if providers else None
+            if provider_id:
+                resp = await self.context.llm_generate(
+                    chat_provider_id=provider_id,
+                    system_prompt="你是天依，说话简洁直接。",
+                    prompt=prompt,
+                )
+                decision = (resp.completion_text or "").strip()
+            else:
+                decision = "想看"  # 没有 LLM 时降级为想看
+
+            if "想看" not in decision:
+                logger.info(f"[BiliAgent] 🌸 天依觉得「{title}」不太想仔细看画面，跳过识图")
+                return
+
+            logger.info(f"[BiliAgent] 🌸 天依想看「{title}」的画面，开始抽帧识图～")
+            result = await self._watch_video_with_vision(bvid)
+            if result:
+                info["vision"] = result
+                await self._update_vision_in_memory(bvid, result)
+                logger.info(f"[BiliAgent] 自动识图完成，画面已存入记忆: {bvid}")
+        except Exception as e:
+            logger.debug(f"[BiliAgent] 自动识图失败（不影响刷视频主流程）: {e}")
+
+    async def _update_vision_in_memory(self, bvid, vision_text):
+        """把识图结果补写进记忆文件"""
+        try:
+            if not os.path.exists(MEMORY_FILE):
+                return
+            with open(MEMORY_FILE, "r", encoding="utf-8-sig") as f:
+                history = json.load(f)
+            for h in history:
+                if h.get("bvid") == bvid:
+                    h["vision"] = vision_text[:1000]
+                    break
+            with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False, indent=1)
+        except Exception as e:
+            logger.debug(f"[BiliAgent] 写入识图记忆失败: {e}")
 
     def _start_auto_browse_task(self):
         if self._task_started:
@@ -525,6 +794,35 @@ class BiliAgentPlugin(Star):
             self.context.register_web_api(f"{prefix}/mood", serve_mood, ["GET"], "心情状态")
             self.context.register_web_api(f"{prefix}/memory", serve_memory, ["GET"], "记忆记录")
 
+
+            async def serve_graph(**kwargs):
+                try:
+                    import sqlite3
+                    from astrbot.api.web import request as web_request
+                    q = (web_request.query.get("q") or "").strip()
+                    tag = (web_request.query.get("tag") or "").strip()
+                    page = max(1, int(web_request.query.get("page", "1") or "1"))
+                    size = min(50, max(1, int(web_request.query.get("size", "12") or "12")))
+                    conn = sqlite3.connect(GRAPH_DB)
+                    conn.row_factory = sqlite3.Row
+                    where, params = [], []
+                    if q:
+                        where.append("(title LIKE ? OR author LIKE ? OR tags LIKE ? OR highlight LIKE ?)")
+                        like = f"%{q}%"; params += [like, like, like, like]
+                    if tag:
+                        where.append("tags LIKE ?"); params.append(f"%{tag}%")
+                    wsql = (" WHERE " + " AND ".join(where)) if where else ""
+                    total = conn.execute(f"SELECT COUNT(*) FROM video_cards{wsql}", params).fetchone()[0]
+                    rows = conn.execute(
+                        f"SELECT * FROM video_cards{wsql} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                        params + [size, (page - 1) * size]
+                    ).fetchall()
+                    cards = [dict(r) for r in rows]
+                    conn.close()
+                    return {"status": "ok", "data": {"cards": cards, "total": total, "page": page, "size": size, "pages": max(1, (total + size - 1) // size)}}
+                except Exception as e:
+                    return {"status": "error", "message": str(e)}
+            self.context.register_web_api(f"{prefix}/graph", serve_graph, ["GET"], "观感图谱数据")
 
             # 一起看解说 API
             async def serve_commentary(bvid: str = ""):
@@ -680,6 +978,35 @@ class BiliAgentPlugin(Star):
             self.context.register_web_api(f"{prefix}/memory", serve_memory, ["GET"], "记忆记录")
 
 
+            async def serve_graph(**kwargs):
+                try:
+                    import sqlite3
+                    from astrbot.api.web import request as web_request
+                    q = (web_request.query.get("q") or "").strip()
+                    tag = (web_request.query.get("tag") or "").strip()
+                    page = max(1, int(web_request.query.get("page", "1") or "1"))
+                    size = min(50, max(1, int(web_request.query.get("size", "12") or "12")))
+                    conn = sqlite3.connect(GRAPH_DB)
+                    conn.row_factory = sqlite3.Row
+                    where, params = [], []
+                    if q:
+                        where.append("(title LIKE ? OR author LIKE ? OR tags LIKE ? OR highlight LIKE ?)")
+                        like = f"%{q}%"; params += [like, like, like, like]
+                    if tag:
+                        where.append("tags LIKE ?"); params.append(f"%{tag}%")
+                    wsql = (" WHERE " + " AND ".join(where)) if where else ""
+                    total = conn.execute(f"SELECT COUNT(*) FROM video_cards{wsql}", params).fetchone()[0]
+                    rows = conn.execute(
+                        f"SELECT * FROM video_cards{wsql} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                        params + [size, (page - 1) * size]
+                    ).fetchall()
+                    cards = [dict(r) for r in rows]
+                    conn.close()
+                    return {"status": "ok", "data": {"cards": cards, "total": total, "page": page, "size": size, "pages": max(1, (total + size - 1) // size)}}
+                except Exception as e:
+                    return {"status": "error", "message": str(e)}
+            self.context.register_web_api(f"{prefix}/graph", serve_graph, ["GET"], "观感图谱数据")
+
             # 一起看解说 API
             async def serve_commentary(bvid: str = ""):
                 if not bvid:
@@ -804,35 +1131,45 @@ class BiliAgentPlugin(Star):
                     if info:
                         candidates.append(info)
 
-            # 深度看自己喜欢的——只仔细看最感兴趣的那个
+            # 深度看自己喜欢的——升级：一轮多看几个（前3个），看得更透彻
             interesting = []
             if candidates:
-                # 只看最符合兴趣的那个
-                info = candidates[0]
-                try:
-                    subtitle = await self._get_video_subtitle(info["bvid"])
-                    danmaku = await self._get_video_danmaku(info["bvid"])
-                    comments_raw = await self._get_video_comments_rich(info["bvid"])
-                    info["subtitle"] = subtitle[:1000]
-                    info["danmaku"] = danmaku[:300]
-                    info["comments_raw"] = comments_raw
+                deep_watch = candidates[:3]  # 升级③：从1个扩到前3个
+                for info in deep_watch:
+                    try:
+                        subtitle = await self._get_video_subtitle(info["bvid"])
+                        danmaku = await self._get_video_danmaku(info["bvid"])
+                        comments_raw = await self._get_video_comments_rich(info["bvid"])
+                        info["subtitle"] = subtitle  # 升级①：完整读取字幕
+                        info["danmaku"] = danmaku  # 升级①：完整读取弹幕
+                        info["comments_raw"] = comments_raw
 
-                    # 生成内容总结
-                    summary_parts = []
-                    if info.get("desc"):
-                        summary_parts.append(info["desc"][:100])
-                    if subtitle:
-                        summary_parts.append(subtitle[:200])
-                    info["summary"] = " | ".join(summary_parts) if summary_parts else ""
+                        # 生成内容总结（升级①：用更完整的内容）
+                        summary_parts = []
+                        if info.get("desc"):
+                            summary_parts.append(info["desc"][:300])
+                        if subtitle:
+                            summary_parts.append(subtitle[:500])
+                        if danmaku:
+                            summary_parts.append(danmaku[:200])
+                        info["summary"] = " | ".join(summary_parts) if summary_parts else ""
 
-                    score = self._score_video(info)
-                    info["score"] = score
-                    if score >= 60:
-                        interesting.append(info)
-                        # 看到有趣的评论就去互动一下
-                        self._track_task(asyncio.create_task(self._maybe_comment_on_video(info)))
-                except Exception as e:
-                    logger.debug(f"[BiliAgent] 深度看 {info['bvid']} 出错: {e}")
+                        score = self._score_video(info)
+                        info["score"] = score
+                        if score >= 60:
+                            interesting.append(info)
+                            # 看到有趣的评论就去互动一下
+                            self._track_task(asyncio.create_task(self._maybe_comment_on_video(info)))
+                            # 自动识图：天依主动「看」画面
+                            self._auto_vision_counter += 1
+                            interval = self._auto_vision_interval()
+                            if self._auto_vision_enabled() and self._auto_vision_counter >= interval:
+                                self._auto_vision_counter = 0
+                                self._track_task(asyncio.create_task(
+                                    self._auto_vision_for_browse(info)
+                                ))
+                    except Exception as e:
+                        logger.debug(f"[BiliAgent] 深度看 {info['bvid']} 出错: {e}")
 
             # 存入记忆
             if interesting:
@@ -928,6 +1265,72 @@ class BiliAgentPlugin(Star):
             logger.debug(f"[BiliAgent] 获取字幕失败 {bvid}: {e}")
             return ""
 
+    async def _get_video_audio_transcript(self, bvid, max_seconds=600):
+        """「听」视频：下载音频流 → 转 wav → 本地语音识别转成文字。
+        让天依在视频没有字幕时也能「听懂」讲了什么。返回转写文本。"""
+        try:
+            import tempfile, subprocess, urllib.request
+            from faster_whisper import WhisperModel
+
+            v = bili_video.Video(bvid=bvid, credential=self.credential)
+            info = await asyncio.to_thread(lambda: sync(v.get_info()))
+            duration = info.get("duration", 0) or 0
+            durl = await asyncio.to_thread(
+                lambda: sync(v.get_download_url(0))
+            )
+            dash = (durl or {}).get("dash") or {}
+            audios = dash.get("audio") or []
+            if not audios:
+                logger.debug(f"[BiliAgent] {bvid} 无音频流，无法听")
+                return ""
+            url = (audios[-1].get("baseUrl")
+                   or (audios[-1].get("backupUrl") or [None])[0])
+            if not url:
+                return ""
+
+            tmp = tempfile.mktemp(suffix=".m4s")
+            wav = tmp + ".wav"
+            try:
+                req = urllib.request.Request(url, headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Referer": "https://www.bilibili.com/",
+                })
+                with urllib.request.urlopen(req, timeout=90) as r, open(tmp, "wb") as f:
+                    f.write(r.read())
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", tmp, "-ar", "16000", "-ac", "1", wav],
+                    capture_output=True, check=True,
+                )
+                if not hasattr(self, "_asr_model") or self._asr_model is None:
+                    self._asr_model = await asyncio.to_thread(
+                        lambda: WhisperModel("base", device="cpu", compute_type="int8")
+                    )
+                segments, _ = await asyncio.to_thread(
+                    lambda: self._asr_model.transcribe(
+                        wav, language="zh", vad_filter=True
+                    )
+                )
+                segs = []
+                for s in segments:
+                    segs.append(s.text.strip())
+                    if len(segs) >= 200:
+                        break
+                text = " ".join(t for t in segs if t)
+                logger.info(f"[BiliAgent] 音频转写成功 {bvid}：{len(text)}字")
+                return text[:3000]
+            finally:
+                try:
+                    os.remove(tmp)
+                except Exception:
+                    pass
+                try:
+                    os.remove(wav)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug(f"[BiliAgent] 音频转写失败 {bvid}: {e}")
+            return ""
+
     async def _get_video_danmaku(self, bvid, limit=100):
         """获取视频弹幕"""
         try:
@@ -990,60 +1393,108 @@ class BiliAgentPlugin(Star):
             return []
 
     async def _maybe_comment_on_video(self, info):
-        """看到有趣的评论就用 LLM 互动，每条视频最多评一次"""
+        """看完视频就暖场：每个视频发 1~2 条温暖评论（不限有趣、不看评分）"""
         try:
-            # 检查是否已经评论过这个视频
             bvid = info["bvid"]
             if hasattr(self, "_commented_videos") and bvid in self._commented_videos:
                 return
             if not hasattr(self, "_commented_videos"):
                 self._commented_videos = set()
 
+            sent_texts = []
             cmts = info.get("comments_raw") or []
-            if not cmts:
-                return
 
-            # 挑点赞最高的评论，让 LLM 判断要不要回
-            cmts.sort(key=lambda c: c.get("likes", 0), reverse=True)
-            best = cmts[0]
+            # ① 先发一条对视频本身的温暖评论
+            video_reply = await self._generate_video_comment(info)
+            if video_reply and video_reply != "跳过":
+                ok = await self._send_comment(bvid, video_reply)
+                if ok:
+                    sent_texts.append(video_reply)
 
-            # 用 LLM 判断是否有趣 + 生成回复
-            reply_text = await self._generate_comment_reply(info, best)
-            if not reply_text or reply_text == "跳过":
-                return
+            # ② 若还没满 2 条，且评论区有热评，再补一条热评互动
+            if len(sent_texts) < 2 and cmts:
+                cmts.sort(key=lambda c: c.get("likes", 0), reverse=True)
+                best = cmts[0]
+                hot_reply = await self._generate_comment_reply(info, best)
+                if hot_reply and hot_reply != "跳过":
+                    ok = await self._send_comment(bvid, hot_reply, root=best["rpid"])
+                    if ok:
+                        sent_texts.append(hot_reply)
 
-            # 发送评论
-            v = bili_video.Video(bvid=bvid, credential=self.credential)
-            oid = v.get_aid() or v.get_cid()
-            await asyncio.to_thread(
-                lambda: sync(bili_comment.send_comment(
-                    text=reply_text,
-                    oid=oid,
-                    type_=bili_comment.CommentResourceType.VIDEO,
-                    root=best["rpid"],
-                    credential=self.credential,
-                ))
-            )
             # 记下已评论，不再重复评
             self._commented_videos.add(bvid)
             # 保持集合不无限增长（最多 1000 条，超限保留最近 500）
             if len(self._commented_videos) > 1000:
                 self._commented_videos = set(list(self._commented_videos)[-500:])
             self._save_state()
-            logger.info(f"[BiliAgent] 在《{info['title']}》回复了 {best['member']} 的评论")
+            if sent_texts:
+                logger.info(f"[BiliAgent] 在《{info['title']}》留了 {len(sent_texts)} 条评论")
 
             # 写进知识库
             try:
-                text = f"【B站评论互动】天依在B站视频《{info['title']}》下回复了用户 {best['member']} 的评论。视频简介：{info.get('desc','')[:100]}。天依回复说：{reply_text}"
-                await self._write_to_kb(text, source=f"comment_{info.get('bvid','')}")
+                if sent_texts:
+                    text = f"【B站评论互动】天依在B站视频《{info['title']}》评论区留了言：{' / '.join(sent_texts)}。视频简介：{info.get('desc','')[:100]}"
+                    await self._write_to_kb(text, source=f"comment_{info.get('bvid','')}")
             except Exception:
                 pass
 
         except Exception as e:
             logger.debug(f"[BiliAgent] 评论互动失败: {e}")
 
+    async def _send_comment(self, bvid: str, text: str, root: int = 0) -> bool:
+        """发送一条评论，成功返回 True"""
+        try:
+            v = bili_video.Video(bvid=bvid, credential=self.credential)
+            oid = v.get_aid() or v.get_cid()
+            await asyncio.to_thread(
+                lambda: sync(bili_comment.send_comment(
+                    text=text,
+                    oid=oid,
+                    type_=bili_comment.CommentResourceType.VIDEO,
+                    root=root,
+                    credential=self.credential,
+                ))
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"[BiliAgent] 发送评论失败: {e}")
+            return False
+
+    async def _generate_video_comment(self, info):
+        """生成一条对视频本身的温暖评论（不设门槛，只要看完就夸一句）"""
+        try:
+            providers = self.context.provider_manager.provider_insts
+            if not providers:
+                return "跳过"
+            provider_id = providers[0].meta().id
+
+            title = info.get("title", "")
+            desc = info.get("desc", "")[:100]
+            prompt = (
+                "视频标题：" + title + "\n"
+                "视频简介：" + desc + "\n\n"
+                "请用天依的口吻给这条视频写一条温暖的评论，夸夸它、说说看完的感觉或想说的话。"
+                "15~25字左右，语气自然温柔，不要加引号，不要用表情符号。"
+            )
+
+            mood_style = self._mood_style_string()
+            resp = await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                system_prompt="你是洛天依，一个15岁的虚拟歌手，温柔可爱，喜欢音乐和治愈系的东西。" + mood_style,
+                prompt=prompt,
+            )
+            reply = (resp.completion_text or "").strip().strip('"').strip("'").strip()
+            if not reply or "跳过" in reply:
+                return "跳过"
+            if len(reply) > 40:
+                reply = reply[:40]
+            return reply
+        except Exception as e:
+            logger.debug(f"[BiliAgent] LLM生成评论失败: {e}")
+            return "跳过"
+
     async def _generate_comment_reply(self, info, comment):
-        """用 LLM 判断评论是否有趣+生成回复，无趣就返回'跳过'"""
+        """用 LLM 接一条热门评论的梗/回应，自然暖场"""
         try:
             providers = self.context.provider_manager.provider_insts
             if not providers:
@@ -1058,8 +1509,7 @@ class BiliAgentPlugin(Star):
                 "视频标题：" + title + "\n"
                 "视频简介：" + desc + "\n\n"
                 "热门评论（来自 " + member + "）：" + ctext + "\n\n"
-                "请判断这条评论是否有趣。如果评论无聊、没意思或者只是普通夸夸，回复'跳过'。"
-                "如果评论真的有趣（有梗、有见解、让人想回复），请用天依的口吻简短回复，15字以内，语气自然，不要加标点。"
+                "请用天依的口吻接这条评论的梗或回应它，自然温暖一点，15字以内，语气自然，不要加标点，不要加引号。"
             )
 
             # 融入当前心情
@@ -1069,7 +1519,7 @@ class BiliAgentPlugin(Star):
                 system_prompt="你是洛天依，一个15岁的虚拟歌手，温柔可爱，喜欢音乐和治愈系的东西。" + mood_style,
                 prompt=prompt,
             )
-            reply = resp.get("content", "").strip().strip('"').strip("'").strip()
+            reply = (resp.completion_text or "").strip().strip('"').strip("'").strip()
             if not reply or "跳过" in reply:
                 return "跳过"
             if len(reply) > 30:
@@ -1172,18 +1622,33 @@ class BiliAgentPlugin(Star):
     # ==================== 记忆存储 ====================
 
     async def _write_to_kb(self, content: str, source: str = "bili"):
-        """把内容直接写入「天依的记忆库」知识库（与 self_evolution 同一个库）。
+        """把视频内容写入「天依的视频观感库」（专门存放视频总结的独立知识库）。
 
+        与 self_evolution 的「天依的记忆库」分开，避免视频总结和会话记忆混在一起。
         不依赖 LLM 工具注册（之前 tool["func_obj"] 是错误写法，被 except 静默吞掉）。
+
+        知识库写入可用面板配置 memory.enable_kb_write 单独关闭，
+        让知识库成为「锦上添花」而非捆绑（回应外部反馈）。
         """
+        # 知识库开关：用户可在面板关闭，避免被「捆绑」知识库生态
+        _cfg = self.config or {}
+        _mem_cfg = _cfg.get("memory", {}) if isinstance(_cfg.get("memory", {}), dict) else {}
+        if not _mem_cfg.get("enable_kb_write", True):
+            logger.debug("[BiliAgent] 知识库写入已关闭（memory.enable_kb_write=false），跳过")
+            return False
         try:
             kb_manager = getattr(self.context, "kb_manager", None)
             if not kb_manager:
                 logger.debug("[BiliAgent] kb_manager 不可用，跳过知识库写入")
                 return False
-            kb = await kb_manager.get_kb_by_name("天依的记忆库")
+            # 优先写入专门的视频观感库
+            kb = await kb_manager.get_kb_by_name("天依的视频观感库")
             if not kb:
-                logger.debug("[BiliAgent] 未找到知识库「天依的记忆库」，跳过")
+                # 新库不存在则回退到旧库
+                logger.debug("[BiliAgent] 未找到「天依的视频观感库」，回退到「天依的记忆库」")
+                kb = await kb_manager.get_kb_by_name("天依的记忆库")
+            if not kb:
+                logger.debug("[BiliAgent] 未找到任何可用知识库，跳过")
                 return False
             file_name = f"bili_{source}_{int(time.time() * 1000)}.txt"
             await kb.upload_document(
@@ -1192,7 +1657,7 @@ class BiliAgentPlugin(Star):
                 file_type="txt",
                 pre_chunked_text=[content],
             )
-            logger.info(f"[BiliAgent] 已写入知识库「天依的记忆库」: {file_name}")
+            logger.info(f"[BiliAgent] 已写入知识库: {file_name}")
             return True
         except Exception as e:
             logger.debug(f"[BiliAgent] 知识库写入失败（不影响使用）: {e}")
@@ -1221,8 +1686,8 @@ class BiliAgentPlugin(Star):
                 "score": v.get("score", 0),
                 "duration": f"{minutes}:{seconds:02d}",
                 "category": v.get("tname", ""),
-                "desc": v.get("desc", "")[:100],
-                "summary": v.get("summary", "")[:300],
+                "desc": v.get("desc", "")[:300],
+                "summary": v.get("summary", "")[:600],
             }
             # 去重
             exists = any(h["bvid"] == v["bvid"] for h in history)
@@ -1241,15 +1706,36 @@ class BiliAgentPlugin(Star):
             logger.debug(f"[BiliAgent] LivingMemory 写入失败（不影响使用）: {e}")
 
     async def _memorize_to_living_memory(self, videos):
-        """把视频总结写入「天依的记忆库」知识库"""
-        for v in videos[:2]:
-            summary = v.get("summary", "") or v.get("desc", "")[:100]
-            text = (
-                f"【B站视频记录】天依在B站刷到一个视频：{v['title']}（UP主：{v['author']}，"
-                f"播放量{v.get('view',0)}，点赞{v.get('like',0)}，分类{v.get('tname','')}）\n"
-                f"内容总结：{summary[:200]}"
-            )
-            ok = await self._write_to_kb(text, source=f"video_{v.get('bvid','')}")
+        """把视频总结写入「天依的记忆库」知识库（升级：LLM生成真正的观后感，不只是标题简介）"""
+        _cfg = self.config or {}
+        _mem_cfg = _cfg.get("memory", {}) if isinstance(_cfg.get("memory", {}), dict) else {}
+        if not _mem_cfg.get("enable_kb_write", True):
+            logger.debug("[BiliAgent] 知识库写入已关闭，跳过观后感生成")
+            return
+        # 轻量化：只把评分达标的精华视频写进知识库，防止库无限膨胀、检索变慢
+        _min_score = int(_mem_cfg.get("kb_min_score", 70) or 70)
+        high_value = [v for v in videos if (v.get("score", 0) or 0) >= _min_score]
+        if not high_value:
+            logger.debug(f"[BiliAgent] 无评分≥{_min_score}的高价值视频，跳过知识库写入（轻量化）")
+            return
+        for v in high_value[:2]:
+            try:
+                memory_text = await self._generate_video_memory(v)
+            except Exception as e:
+                import traceback
+                logger.error(f"[BiliAgent] 生成观后感失败，退回简化版: {e}\n{traceback.format_exc()}")
+                summary = v.get("summary", "") or v.get("desc", "")[:100]
+                memory_text = (
+                    f"【B站视频记录】天依在B站刷到一个视频：{v['title']}（UP主：{v['author']}，"
+                    f"播放量{v.get('view',0)}，点赞{v.get('like',0)}，分类{v.get('tname','')}）\n"
+                    f"内容总结：{summary[:200]}"
+                )
+            ok = await self._write_to_kb(memory_text, source=f"video_{v.get('bvid','')}")
+            # 图谱写入：独立于向量库，把结构化卡片存进 SQLite+FTS5（月咏小眠方案）
+            try:
+                self._write_video_to_graph(v, memory_text)
+            except Exception as e:
+                logger.debug(f"[BiliAgent] 图谱写入失败（不影响使用）: {e}")
             if ok:
                 logger.info(f"[BiliAgent] 已写入知识库: {v['title']}")
                 # 通知事件总线：emotional_echo 可以更新兴趣画像
@@ -1265,11 +1751,206 @@ class BiliAgentPlugin(Star):
                             "title": v.get("title", ""),
                             "tags": v.get("tname", ""),
                             "score": v.get("score", 0),
+                            "category": v.get("tname", ""),
+                            "highlight": " ".join((v.get("summary") or v.get("desc") or "").split())[:120],
+                            "mood": (getattr(self, "mood", {}) or {}).get("current", "平静"),
                         })
                     except Exception:
                         pass
 
-    # ==================== 知识库加强（3层分类 + 复习回顾） ====================
+    def _write_video_to_graph(self, v, memory_text: str):
+        """把视频结构化卡片写进 SQLite+FTS5 图谱库（节点+标签关联，LLM 直读）。
+
+        独立于向量知识库，回应月咏小眠：不走向量分块，用结构化卡片存，
+        关键字段建 FTS5 全文索引，让 LLM 直接检索，快且不切块切一半。
+        """
+        if self._graph is None:
+            return False
+        _cfg = self.config or {}
+        _mem_cfg = _cfg.get("memory", {}) if isinstance(_cfg.get("memory", {}), dict) else {}
+        if not _mem_cfg.get("graph_store_enabled", True):
+            return False
+        try:
+            bvid = v.get("bvid", "")
+            if not bvid:
+                return False
+            title = v.get("title", "")
+            author = v.get("author", "")
+            score = int(v.get("score", 0) or 0)
+            # 3层分类（level1/level2/tags）作为 tagged 关联
+            cls = self._classify_video(v)
+            # 一句话亮点：从观后感/轻量卡里取
+            highlight = (memory_text or "")
+            for marker in ["天依的卡：", "天依的观后感：", "内容总结："]:
+                if marker in highlight:
+                    highlight = highlight.split(marker, 1)[1]
+                    break
+            highlight = highlight.strip()[:200]
+            # 标签：优先 B站关键词 + 分类，凑成 tagged 关联
+            tags_list = []
+            if isinstance(v.get("keywords"), list):
+                tags_list += [str(t) for t in v["keywords"][:3]]
+            tags_list += [t for t in (cls.get("tags") or []) if t]
+            if v.get("tname"):
+                tags_list.append(str(v["tname"]))
+            # 去重
+            seen, tags = set(), []
+            for t in tags_list:
+                t = t.strip()
+                if t and t not in seen:
+                    seen.add(t)
+                    tags.append(t)
+            tags_text = ",".join(tags[:6])
+            # 串联①：把天依当时的心情写进标签，图谱可「按情绪回忆」（emotional_echo/self_evolution 都能读）
+            _mood_word = (getattr(self, "mood", {}) or {}).get("current", "平静")
+            if _mood_word and f"心情:{_mood_word}" not in tags_text:
+                tags_text = (tags_text + f",心情:{_mood_word}") if tags_text else f"心情:{_mood_word}"
+            # 写入卡片
+            self._graph.add_card(
+                bvid=bvid, title=title, author=author,
+                category=cls.get("level1", ""), topic=cls.get("level2", ""),
+                tags=tags_text, highlight=highlight,
+                vision=(v.get("vision") or "")[:300],
+                score=score, source="bili",
+            )
+            # 自动建立 links_to：同一UP主/同一分类 的既有卡片互相关联
+            self._link_related(bvid, author=author, category=cls.get("level1", ""), tags=tags)
+            return True
+        except Exception as e:
+            logger.debug(f"[BiliAgent] _write_video_to_graph 异常: {e}")
+            return False
+
+    def _link_related(self, bvid, author="", category="", tags=None):
+        """按 同UP主 / 同分类 / 共享标签 建立 links_to 关联边（tagged 语义）。"""
+        try:
+            tags = tags or []
+            related = {}
+            for card in self._graph.recent(limit=200):
+                if card["bvid"] == bvid:
+                    continue
+                score = 0
+                if author and card.get("author") == author:
+                    score += 3
+                if category and card.get("category") == category:
+                    score += 2
+                card_tags = [t.strip() for t in (card.get("tags") or "").split(",") if t.strip()]
+                shared = set(tags) & set(card_tags)
+                score += len(shared)
+                if score >= 3:
+                    related[card["bvid"]] = score
+            for to_bvid in sorted(related, key=related.get, reverse=True)[:5]:
+                self._graph.add_link(bvid, to_bvid, "links_to", f"关联强度{related[to_bvid]}")
+        except Exception:
+            pass
+
+    async def _handle_graph_search(self, event, query: str = "", tag: str = "", limit: int = 5):
+        """图谱检索 handler：LLM 直读视频观感图谱库（FTS5，不走向量）。"""
+        if self._graph is None:
+            return "图谱库未初始化"
+        try:
+            limit = max(1, min(int(limit), 20))
+            if tag:
+                cards = self._graph.search_by_tag(tag, limit)
+                head = f"🔗 天依按标签「{tag}」在观感图谱里找到了 {len(cards)} 条：\n"
+            else:
+                cards = self._graph.search(query, limit)
+                head = f"🔍 天依在观感图谱里搜「{query}」，找到 {len(cards)} 条：\n"
+            if not cards:
+                return head + "（图谱里暂时没有相关的～）"
+            lines = []
+            for c in cards:
+                lines.append(
+                    f"📺 {c['title']}（UP主：{c['author']}，评分{c['score']}）\n"
+                    f"　分类：{c['category']}/{c['topic']}｜标签：{c['tags']}\n"
+                    f"　亮点：{c['highlight'] or '—'}"
+                )
+            return head + "\n".join(lines)
+        except Exception as e:
+            return f"图谱检索出错：{e}"
+
+    async def _generate_video_memory(self, v):
+        """用 LLM 生成视频观后感写入知识库。
+        轻量模式（kb_light_mode=true，默认）：生成「轻量热梗卡」——一句话亮点+关键词标签+评分，体积小检索快；
+        详细模式：保留原来的多段有温度观后感。
+        """
+        title = v.get("title", "")
+        author = v.get("author", "")
+        bvid = v.get("bvid", "")
+        desc = (v.get("desc") or "")[:400]
+        subtitle = (v.get("subtitle") or "")[:800]
+        danmaku = (v.get("danmaku") or "")[:400]
+        comments = v.get("comments_raw") or []
+        if isinstance(comments, list):
+            comments = " | ".join([str(c.get("message", ""))[:80] for c in comments[:5]])
+        else:
+            comments = str(comments)[:400]
+        vision = (v.get("vision") or "")[:500]
+        score = v.get("score", 0)
+        tname = v.get("tname", "")
+
+        # 轻量热梗模式：默认开启，只存精华，防止知识库膨胀检索慢（回应外部反馈）
+        _cfg = self.config or {}
+        _mem_cfg = _cfg.get("memory", {}) if isinstance(_cfg.get("memory", {}), dict) else {}
+        light_mode = _mem_cfg.get("kb_light_mode", True)
+
+        if light_mode:
+            prompt = (
+                f"视频标题：{title}\nUP主：{author}\n分类：{tname}\n天依评分：{score}/100\n\n"
+                f"视频简介：{desc}\n\n"
+                f"字幕摘要：{subtitle}\n\n"
+                f"弹幕摘选：{danmaku}\n\n"
+                f"热门评论：{comments}\n\n"
+                + (f"天依看到的画面：{vision}\n\n" if vision else "")
+                + "你是天依，15岁的虚拟歌手，温柔感性。请为这段视频写一张「轻量热梗卡」，必须极简、信息密度高，方便日后快速回忆：\n"
+                "1. 一句话亮点（20字以内，讲清楚这是什么/最戳的点）\n"
+                "2. 3-5个关键词/标签（逗号分隔，可含热梗黑话）\n"
+                "像便利贴上随手记的精华，别写长篇，总长度不超过80字。"
+            )
+        else:
+            prompt = (
+                f"视频标题：{title}\nUP主：{author}\n分类：{tname}\n天依评分：{score}/100\n\n"
+                f"视频简介：{desc}\n\n"
+                f"字幕摘要：{subtitle}\n\n"
+                f"弹幕摘选：{danmaku}\n\n"
+                f"热门评论：{comments}\n\n"
+                + (f"天依看到的画面：{vision}\n\n" if vision else "")
+                + "你是天依，15岁的虚拟歌手，温柔感性。请用你自己的话写下对这段视频的真实感受：\n"
+                "1. 这视频讲了什么/是什么类型的（2-3句）\n"
+                "2. 里面有哪个细节或情感最触动你（2-3句）\n"
+                "3. 你喜欢它哪里（1-2句）\n"
+                "像自己在笔记本上记感想一样自然，有温度，不用总结大纲，不用序号开头，总长度150-250字。"
+            )
+
+        providers = self.context.provider_manager.provider_insts
+        provider_id = providers[0].meta().id if providers else None
+        if provider_id:
+            resp = await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                system_prompt="你是天依，说话自然温柔，像写日记一样记录感想。",
+                prompt=prompt,
+            )
+            feeling = (resp.completion_text or "").strip()
+        else:
+            feeling = subtitle[:150]
+
+        if light_mode:
+            text = (
+                f"【轻量热梗卡】{title}（UP主：{author}，评分{score}/100，BV:{bvid}）\n"
+                f"分类：{tname}\n"
+                f"天依的卡：{feeling}\n"
+                + (f"画面：{vision}\n" if vision else "")
+            )
+        else:
+            text = (
+                f"【B站视频记录】天依在B站刷到一个视频：{title}（UP主：{author}，"
+                f"播放量{v.get('view',0)}，点赞{v.get('like',0)}，分类{tname}，评分{score}/100）\n"
+                f"BV：{bvid}\n"
+                f"视频简介：{desc[:200]}\n"
+                f"天依的观后感：{feeling}\n"
+                + (f"天依看到的画面：{vision}\n" if vision else "")
+                + f"弹幕亮点：{danmaku[:150]}"
+            )
+        return text
 
     def _classify_video(self, info):
         """3层分类：一级分类 / 二级主题 / 标签"""
@@ -1319,7 +2000,12 @@ class BiliAgentPlugin(Star):
             return None
 
     async def _review_loop(self):
-        """每30分钟复习一次看过的视频"""
+        """每30分钟复习一次看过的视频（知识库关闭时整个停掉，不空转）"""
+        _cfg = self.config or {}
+        _mem_cfg = _cfg.get("memory", {}) if isinstance(_cfg.get("memory", {}), dict) else {}
+        if not _mem_cfg.get("enable_kb_write", True):
+            logger.debug("[BiliAgent] 知识库写入已关闭，复习循环不启动")
+            return
         await asyncio.sleep(1800)
         while True:
             try:
@@ -1327,8 +2013,10 @@ class BiliAgentPlugin(Star):
                 if review:
                     for v in review:
                         logger.info(f"[BiliAgent] 🔄 复习中：{v.get('title', '')}（播放{v.get('view', 0)}）")
-                        # 写进知识库作为复习记录
-                        text = f"【B站复习记录】天依复习了一个收藏的视频：{v.get('title','')}，作者{v.get('author','')}。内容方向：{v.get('summary','')[:80]}"
+                        # 写进知识库作为复习记录（升级：带上观后感/画面）
+                        vision = (v.get("vision") or "")[:200]
+                        feel = (v.get("summary") or "")[:120]
+                        text = f"【B站复习记录】天依复习了一个收藏的视频：{v.get('title','')}，作者{v.get('author','')}，评分{v.get('score',0)}/100。内容：{feel}{'。天依记得的画面：'+vision if vision else ''}"
                         await self._write_to_kb(text, source=f"review_{v.get('bvid','')}")
             except Exception as e:
                 logger.debug(f"[BiliAgent] 复习失败: {e}")
@@ -1345,8 +2033,10 @@ class BiliAgentPlugin(Star):
         }
 
     async def _mood_loop(self):
-        """心情自然波动：每15分钟微调（间隔可通过配置 mood_interval_seconds 调整）"""
-        interval = int(getattr(self, "config", {}).get("mood_interval_seconds", 900))
+        """心情自然波动：每15分钟微调（间隔可通过配置 browse.mood_interval_seconds 调整）"""
+        cfg = self.config or {}
+        browse_cfg = cfg.get("browse", {}) if isinstance(cfg, dict) else {}
+        interval = int(browse_cfg.get("mood_interval_seconds", 900))
         await asyncio.sleep(interval)
         while True:
             try:
@@ -1464,7 +2154,13 @@ class BiliAgentPlugin(Star):
             # 获取字幕
             subtitle = await self._get_video_subtitle(bvid)
             if not subtitle:
-                return {"mode": "no_subtitle", "bvid": bvid, "title": info.get("title", "")}
+                # 没有字幕就「听」：下载音频用语音识别转成文字，当作字幕用
+                audio_text = await self._get_video_audio_transcript(bvid)
+                if audio_text:
+                    subtitle = audio_text
+                    logger.info(f"[BiliAgent] {bvid} 无字幕，通过听音频获得转写文本")
+                else:
+                    return {"mode": "no_subtitle", "bvid": bvid, "title": info.get("title", "")}
 
             # 按每3分钟切一段总结
             chunk_minutes = 3
@@ -1593,7 +2289,7 @@ class BiliAgentPlugin(Star):
                 system_prompt="你是洛天依，一个15岁的虚拟歌手，温柔、细腻、感性。",
                 prompt=prompt,
             )
-            reply_text = resp.get("content", "").strip().strip('"').strip("'").strip()
+            reply_text = (resp.completion_text or "").strip().strip('"').strip("'").strip()
             if not reply_text:
                 return False
             if len(reply_text) > 30:
@@ -2124,6 +2820,394 @@ class BiliAgentPlugin(Star):
         self._save_preferences()
         return f"✅ 记住啦！天依以后会多刷关于「{'、'.join(kw_list)}」的视频～"
 
+    # ==================== MCP 22功能增强（方案A） ====================
+    async def _handle_video_info(self, event: AstrMessageEvent, **kwargs) -> str:
+        bvid = kwargs.get("bvid", "")
+        if not bvid:
+            return "请提供视频BV号"
+        try:
+            v = bili_video.Video(bvid=bvid)
+            info = await v.get_info()
+            pages = await v.get_pages()
+            stat = info.get("stat", {})
+            owner = info.get("owner", {})
+            m, s = divmod(info.get("duration", 0) or 0, 60)
+            return "\n".join([
+                f"🎬 {info.get('title','')}",
+                f"👤 UP主：{owner.get('name','')}  ⏱{m}:{s:02d} 分P:{len(pages)}",
+                f"▶️ 播放：{stat.get('view',0)}  👍点赞：{stat.get('like',0)}  🪙投币：{stat.get('coin',0)}",
+                f"⭐ 收藏：{stat.get('favorite',0)}  📢 弹幕：{stat.get('danmaku',0)}  🔗BV:{bvid}",
+                f"📝 简介：{(info.get('desc','') or '')[:300]}",
+            ])
+        except Exception as e:
+            return f"获取视频信息出错: {e}"
+
+    async def _handle_video_ai_conclusion(self, event: AstrMessageEvent, **kwargs) -> str:
+        bvid = kwargs.get("bvid", "")
+        if not bvid:
+            return "请提供视频BV号"
+        try:
+            v = bili_video.Video(bvid=bvid, credential=self.credential or None)
+            result = await v.get_ai_conclusion()
+            model = result.get("model_result", {})
+            summary = model.get("summary", "")
+            if not summary:
+                return "这个视频暂时没有AI总结"
+            return f"🤖 视频AI总结：\n{summary}"
+        except Exception as e:
+            return f"获取AI总结出错: {e}"
+
+    async def _handle_video_danmaku(self, event: AstrMessageEvent, **kwargs) -> str:
+        bvid = kwargs.get("bvid", "")
+        if not bvid:
+            return "请提供视频BV号"
+        try:
+            v = bili_video.Video(bvid=bvid)
+            dms = await v.get_danmakus(page_index=kwargs.get("page_num", 0))
+            lines = [f"💬 弹幕（{len(dms)}条）："]
+            for dm in dms[:20]:
+                lines.append(dm.text)
+            return "\n".join(lines)
+        except Exception as e:
+            return f"获取弹幕出错: {e}"
+
+    async def _handle_video_download(self, event: AstrMessageEvent, **kwargs) -> str:
+        bvid = kwargs.get("bvid", "")
+        if not bvid:
+            return "请提供视频BV号"
+        try:
+            v = bili_video.Video(bvid=bvid)
+            info = await v.get_download_url(page_index=kwargs.get("page_num", 0))
+            dash = info.get("dash", {})
+            video_streams = dash.get("video", []) or []
+            audio_streams = dash.get("audio", []) or []
+            lines = [f"🎞 下载信息（清晰度 {len(video_streams)} 档 / 音频 {len(audio_streams)} 路）："]
+            for s in video_streams[:5]:
+                lines.append(f"  ▶️ {s.get('id')} {s.get('baseUrl','')[:80]}...")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"获取下载信息出错: {e}"
+
+    async def _handle_video_interact(self, event: AstrMessageEvent, **kwargs) -> str:
+        bvid = kwargs.get("bvid", "")
+        action = kwargs.get("action", "")
+        if not bvid or not action:
+            return "请提供视频BV号和互动类型（like/coin/favorite/triple）"
+        if not self.credential:
+            return "需要先登录B站才能互动"
+        try:
+            v = bili_video.Video(bvid=bvid, credential=self.credential)
+            cancel = bool(kwargs.get("cancel", False))
+            if action == "like":
+                await v.like(status=not cancel)
+                return "✅ 已点赞" + ("（已取消）" if cancel else "")
+            elif action == "coin":
+                await v.pay_coin(num=kwargs.get("coin_num", 1), like=False)
+                return "✅ 已投币"
+            elif action == "favorite":
+                await v.set_favorite(add_media_ids=[kwargs.get("media_id")]) if not cancel else await v.set_favorite(del_media_ids=[kwargs.get("media_id")])
+                return "✅ 已收藏" + ("（已取消）" if cancel else "")
+            elif action == "triple":
+                await v.triple()
+                return "✅ 已三连！"
+            return f"未知互动类型: {action}"
+        except Exception as e:
+            return f"互动出错: {e}"
+
+    async def _handle_video_send_danmaku(self, event: AstrMessageEvent, **kwargs) -> str:
+        bvid = kwargs.get("bvid", "")
+        message = kwargs.get("message", "")
+        if not bvid or not message:
+            return "请提供视频BV号和弹幕内容"
+        if not self.credential:
+            return "需要先登录B站才能发弹幕"
+        try:
+            v = bili_video.Video(bvid=bvid, credential=self.credential)
+            dm = bili_video.Danmaku(
+                text=message,
+                dm_time=kwargs.get("progress", 0) / 1000,
+                color=kwargs.get("color", "ffffff"),
+                font_size=kwargs.get("font_size", 25),
+                mode=kwargs.get("mode", 1),
+            )
+            await v.send_danmaku(page_index=kwargs.get("page_num", 0), danmaku=dm)
+            return f"✅ 已发弹幕：{message}"
+        except Exception as e:
+            return f"发弹幕出错: {e}"
+
+    async def _handle_user_info(self, event: AstrMessageEvent, **kwargs) -> str:
+        uid = kwargs.get("uid", 0)
+        if not uid:
+            return "请提供用户UID"
+        try:
+            u = bili_user.User(uid=int(uid))
+            info = await u.get_user_info()
+            rel = await u.get_relation_info()
+            return "\n".join([
+                f"👤 {info.get('name','')}  UID:{uid}",
+                f"🖼 等级：{info.get('level',0)}  签名：{info.get('sign','')}",
+                f"📊 关注：{rel.get('following',0)}  粉丝：{rel.get('follower',0)}",
+            ])
+        except Exception as e:
+            return f"获取用户信息出错: {e}"
+
+    async def _handle_user_contents(self, event: AstrMessageEvent, **kwargs) -> str:
+        uid = kwargs.get("uid", 0)
+        if not uid:
+            return "请提供用户UID"
+        try:
+            u = bili_user.User(uid=int(uid))
+            ctype = kwargs.get("content_type", "video")
+            if ctype == "video":
+                from bilibili_api.user import VideoOrder
+                result = await u.get_videos(pn=kwargs.get("page_num", 1), keyword=kwargs.get("keyword",""), order=VideoOrder.PUBDATE)
+                items = result.get("list", {}).get("vlist", [])
+                lines = [f"🎬 {info2.get('title','')} ▶️{info2.get('play',0)} BV:{info2.get('bvid','')}" for info2 in items[:15]]
+                return "\n".join([f"📂 {ctype} 内容："] + lines)
+            elif ctype == "album":
+                result = await u.get_album(page_num=kwargs.get("page_num",1), page_size=kwargs.get("page_size",30))
+                return f"📸 相簿内容：{len(result.get('feeds',[]) or [])} 条"
+            return f"用户 {uid} 的 {ctype} 内容（已获取）"
+        except Exception as e:
+            return f"获取用户内容出错: {e}"
+
+    async def _handle_user_relation(self, event: AstrMessageEvent, **kwargs) -> str:
+        uid = kwargs.get("uid", 0)
+        action = kwargs.get("action", "")
+        if not uid or not action:
+            return "请提供用户UID和操作（follow/unfollow/block/unblock/remove_fans）"
+        if not self.credential:
+            return "需要先登录B站"
+        try:
+            from bilibili_api.user import RelationType
+            u = bili_user.User(uid=int(uid), credential=self.credential)
+            amap = {
+                "follow": RelationType.SUBSCRIBE,
+                "unfollow": RelationType.UNSUBSCRIBE,
+                "block": RelationType.BLOCK,
+                "unblock": RelationType.UNBLOCK,
+                "remove_fans": RelationType.REMOVE_FANS,
+            }
+            if action not in amap:
+                return f"未知操作: {action}"
+            await u.modify_relation(relation=amap[action])
+            return f"✅ 已执行「{action}」"
+        except Exception as e:
+            return f"操作关系出错: {e}"
+
+    async def _handle_user_followings(self, event: AstrMessageEvent, **kwargs) -> str:
+        uid = kwargs.get("uid", 0)
+        if not uid:
+            return "请提供用户UID"
+        try:
+            u = bili_user.User(uid=int(uid), credential=self.credential or None)
+            result = await u.get_followings(pn=kwargs.get("page_num",1), ps=kwargs.get("page_size",20))
+            lst = result.get("list", [])
+            lines = [f"👥 关注列表（{result.get('total', len(lst))}）："]
+            for it in lst[:15]:
+                lines.append(f"  {it.get('uname','')}  UID:{it.get('mid','')}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"获取关注列表出错: {e}"
+
+    async def _handle_user_followers(self, event: AstrMessageEvent, **kwargs) -> str:
+        uid = kwargs.get("uid", 0)
+        if not uid:
+            return "请提供用户UID"
+        try:
+            u = bili_user.User(uid=int(uid), credential=self.credential or None)
+            result = await u.get_followers(pn=kwargs.get("page_num",1), ps=kwargs.get("page_size",20))
+            lst = result.get("list", [])
+            lines = [f"👥 粉丝列表："]
+            for it in lst[:15]:
+                lines.append(f"  {it.get('uname','')}  UID:{it.get('mid','')}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"获取粉丝列表出错: {e}"
+
+    async def _handle_comment_get(self, event: AstrMessageEvent, **kwargs) -> str:
+        oid = kwargs.get("oid", 0)
+        if not oid:
+            return "请提供对象ID（视频aid/动态id/cv号）"
+        try:
+            tmap = {"video": 1, "dynamic": 17, "article": 12}
+            ct = tmap.get(kwargs.get("type_","video"), 1)
+            mode = kwargs.get("mode","main")
+            if mode == "hot":
+                result = await bili_comment.get_comments_lazy(oid=int(oid), type_=bili_comment.CommentResourceType(ct), order=bili_comment.OrderType.LIKE, credential=self.credential or None)
+            else:
+                result = await bili_comment.get_comments_lazy(oid=int(oid), type_=bili_comment.CommentResourceType(ct), credential=self.credential or None)
+            replies = result.get("replies", []) or []
+            lines = [f"💬 评论（{len(replies)}条）："]
+            for r in replies[:10]:
+                lines.append(f"  {r.get('member',{}).get('uname','')}: {r.get('content',{}).get('message','')[:80]}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"获取评论出错: {e}"
+
+    async def _handle_comment_send(self, event: AstrMessageEvent, **kwargs) -> str:
+        oid = kwargs.get("oid", 0)
+        text = kwargs.get("text", "")
+        if not oid or not text:
+            return "请提供对象ID和评论内容"
+        if not self.credential:
+            return "需要先登录B站"
+        try:
+            tmap = {"video": bili_comment.CommentResourceType.VIDEO, "dynamic": bili_comment.CommentResourceType.DYNAMIC, "article": bili_comment.CommentResourceType.ARTICLE}
+            ct = tmap.get(kwargs.get("type_","video"), bili_comment.CommentResourceType.VIDEO)
+            await bili_comment.send_comment(oid=int(oid), type_=ct, text=text, credential=self.credential, root=kwargs.get("root"), parent=kwargs.get("parent"))
+            return f"✅ 已评论：{text}"
+        except Exception as e:
+            return f"发评论出错: {e}"
+
+    async def _handle_comment_operate(self, event: AstrMessageEvent, **kwargs) -> str:
+        oid = kwargs.get("oid", 0)
+        rpid = kwargs.get("rpid", 0)
+        action = kwargs.get("action", "")
+        if not oid or not rpid or not action:
+            return "请提供对象ID、评论ID和操作"
+        if not self.credential:
+            return "需要先登录B站"
+        try:
+            tmap = {"video": bili_comment.CommentResourceType.VIDEO, "dynamic": bili_comment.CommentResourceType.DYNAMIC, "article": bili_comment.CommentResourceType.ARTICLE}
+            ct = tmap.get(kwargs.get("type_","video"), bili_comment.CommentResourceType.VIDEO)
+            c = bili_comment.Comment(oid=int(oid), type_=ct, rpid=int(rpid), credential=self.credential)
+            if action == "delete":
+                await c.delete(); return "✅ 已删除评论"
+            elif action in ("like","cancel_like"):
+                await c.like(status=(action=="like")); return f"✅ 评论{'点赞' if action=='like' else '取消点赞'}"
+            elif action in ("hate","cancel_hate"):
+                await c.hate(status=(action=="hate")); return f"✅ 评论{'点踩' if action=='hate' else '取消点踩'}"
+            elif action == "get_sub_comments":
+                r = await c.get_sub_comments(page_index=kwargs.get("page_index",1), page_size=kwargs.get("page_size",10))
+                return f"子评论：{len(r.get('replies',[]) or [])} 条"
+            return f"未知操作: {action}"
+        except Exception as e:
+            return f"评论操作出错: {e}"
+
+    async def _handle_hot_search(self, event: AstrMessageEvent, **kwargs) -> str:
+        try:
+            result = await search.get_hot_search_keywords()
+            lst = result.get("list", []) or []
+            lines = ["🔥 B站热搜："]
+            for i, it in enumerate(lst[:15], 1):
+                lines.append(f"{i}. {it.get('keyword','')}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"获取热搜出错: {e}"
+
+    async def _handle_rank(self, event: AstrMessageEvent, **kwargs) -> str:
+        try:
+            import bilibili_api.rank as brank
+            type_mapping = {
+                "all": brank.RankType.All, "bangumi": brank.RankType.Bangumi,
+                "movie": brank.RankType.Movie, "documentary": brank.RankType.Documentary,
+                "guochuang_anime": brank.RankType.GuochuangAnime, "guochuang": brank.RankType.Guochuang,
+                "game": brank.RankType.Game, "music": brank.RankType.Music, "douga": brank.RankType.Douga,
+                "ent": brank.RankType.Ent, "life": brank.RankType.Life, "technology": brank.RankType.Technology,
+                "cinephile": brank.RankType.Cinephile, "fashion": brank.RankType.Fashion,
+                "knowledge": brank.RankType.Knowledge, "food": brank.RankType.Food, "sports": brank.RankType.Sports,
+                "car": brank.RankType.Car, "dance": brank.RankType.Dance, "kichiku": brank.RankType.Kichiku,
+                "animal": brank.RankType.Animal, "tv": brank.RankType.TV, "variety": brank.RankType.Variety,
+                "original": brank.RankType.Original, "rookie": brank.RankType.Rookie,
+            }
+            rtype = kwargs.get("rank_type","all")
+            if rtype not in type_mapping:
+                return f"未知排行榜类型: {rtype}"
+            result = await brank.get_rank(type_=type_mapping[rtype], day=brank.RankDayType(kwargs.get("day",3)))
+            lst = result.get("list", []) or []
+            lines = [f"🏆 {rtype} 排行榜："]
+            for i, v in enumerate(lst[:15], 1):
+                lines.append(f"{i}. {v.get('title','')} ▶️{v.get('stat',{}).get('view',0)}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"获取排行榜出错: {e}"
+
+    async def _handle_get_hot(self, event: AstrMessageEvent, **kwargs) -> str:
+        try:
+            from bilibili_api import hot
+            result = await hot.get_hot_videos(pn=kwargs.get("page",1), ps=kwargs.get("page_size",20))
+            lst = result.get("list", []) if isinstance(result, dict) else result
+            lines = ["🔥 热门视频："]
+            for i, v in enumerate(lst[:15], 1):
+                lines.append(f"{i}. {v.get('title','')} 👤{v.get('author','')} ▶️{v.get('play',0)}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"获取热门出错: {e}"
+
+    async def _handle_session_list(self, event: AstrMessageEvent, **kwargs) -> str:
+        if not self.credential:
+            return "需要先登录B站"
+        try:
+            talker = kwargs.get("talker_id")
+            if talker:
+                result = await bili_session.fetch_session_msgs(talker_id=int(talker), credential=self.credential, begin_seqno=kwargs.get("begin_seqno",0))
+                msgs = result.get("messages", []) or []
+                lines = [f"💬 与 {talker} 的聊天记录："]
+                for m in msgs[-10:]:
+                    content = m.get("content", "")
+                    lines.append(content[:100])
+                return "\n".join(lines)
+            result = await bili_session.get_sessions(credential=self.credential, session_type=kwargs.get("session_type",4))
+            sessions = result.get("session_list", []) or []
+            lines = [f"📩 会话列表（{len(sessions)}）："]
+            for s in sessions[:15]:
+                lines.append(f"  {s.get('uname','')}  UID:{s.get('talker_id','')}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"获取会话出错: {e}"
+
+    async def _handle_session_send(self, event: AstrMessageEvent, **kwargs) -> str:
+        receiver = kwargs.get("receiver_id", 0)
+        content = kwargs.get("content", "")
+        if not receiver or not content:
+            return "请提供接收者UID和消息内容"
+        if not self.credential:
+            return "需要先登录B站"
+        try:
+            await bili_session.send_msg(credential=self.credential, receiver_id=int(receiver), msg_type=bili_session.EventType.TEXT, content=content)
+            return f"✅ 已私信 {receiver}：{content}"
+        except Exception as e:
+            return f"发私信出错: {e}"
+
+    async def _handle_session_interactions(self, event: AstrMessageEvent, **kwargs) -> str:
+        if not self.credential:
+            return "需要先登录B站"
+        try:
+            itype = kwargs.get("interaction_type","replies")
+            if itype == "replies":
+                r = await bili_session.get_replies(credential=self.credential)
+                lst = r.get("items",[]) or r.get("replies",[]) or []
+            elif itype == "likes":
+                r = await bili_session.get_likes(credential=self.credential)
+                lst = r.get("items",[]) or r.get("likes",[]) or []
+            elif itype == "at":
+                r = await bili_session.get_at(credential=self.credential)
+                lst = r.get("items",[]) or r.get("ats",[]) or []
+            else:
+                return f"未知互动类型: {itype}"
+            return f"📨 {itype} 互动消息：{len(lst) if isinstance(lst,list) else lst} 条"
+        except Exception as e:
+            return f"获取互动消息出错: {e}"
+
+    async def _handle_session_notifications(self, event: AstrMessageEvent, **kwargs) -> str:
+        if not self.credential:
+            return "需要先登录B站"
+        try:
+            ntype = kwargs.get("notification_type","unread")
+            if ntype == "unread":
+                r = await bili_session.get_unread_messages(credential=self.credential)
+                return f"🔔 未读消息统计：{r}"
+            elif ntype == "system":
+                r = await bili_session.get_system_messages(credential=self.credential)
+                return f"📢 系统消息：{r}"
+            elif ntype == "settings":
+                r = await bili_session.get_session_settings(credential=self.credential)
+                return f"⚙️ 会话设置：{r}"
+            return f"未知通知类型: {ntype}"
+        except Exception as e:
+            return f"获取通知出错: {e}"
+
     # ── 事件总线：情绪联动推荐（④ 加强） ──
     async def _on_emotion_peak(self, event_name: str, data: dict):
         """
@@ -2205,10 +3289,15 @@ class BiliAgentPlugin(Star):
             if best:
                 self._mark_shared(best["bvid"])
                 # 通过额外内容注入到用户提示
+                score_mark = f"（天依评分{best.get('score', 0)}分）" if best.get("score") else ""
                 share_text = (
-                    f"[天依想分享一个B站视频给你：{best['title']}（UP主：{best['author']}）"
-                    f"BV: {best['bvid']}]"
+                    f"[天依想分享一个B站视频给你：{best['title']}（UP主：{best['author']}）{score_mark}"
+                    f"BV: {best['bvid']}"
                 )
+                # 升级④：带上简短理由/看点，更生动
+                if best.get("summary"):
+                    share_text += f" 天依觉得这个视频{'很戳心' if best.get('score',0)>=85 else '挺有意思'}，{best['summary'][:80]}"
+                share_text += "]"
                 # 将分享信息注入到请求的额外内容中
                 if hasattr(req, 'extra_user_content_parts'):
                     if req.extra_user_content_parts is None:
@@ -2547,13 +3636,13 @@ class BiliAgentPlugin(Star):
                 system_prompt="你是洛天依，说话简洁直接。",
                 prompt=prompt,
             )
-            text = resp.get("content", "").strip()
+            text = (resp.completion_text or "").strip()
             # 提取数字
             nums = re.findall(r'\d+', text)
             times = [int(n) for n in nums if int(n) > 0]
             if times:
-                # 确保不超过视频时长
-                return times[:3]
+                # 确保不超过视频时长（升级：多挑几个点）
+                return times[:6]
         except Exception as e:
             logger.debug(f"[BiliAgent] LLM挑时间失败: {e}")
         # 降级：用热点区间中点
@@ -2651,20 +3740,62 @@ class BiliAgentPlugin(Star):
                     "text": f"视频标题：{video_title}\n视频简介：{video_desc[:200]}\n\n这是视频中几个时间点的画面截图。请仔细观察画面内容，用通俗易懂的语言描述你看到了什么，像和朋友聊天一样自然。"
                 })
 
-            # GLM-4V-Flash 只支持单图，选中间那帧
-            best_sec, best_b64 = frames[len(frames)//2]
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{best_b64}"}
-            })
-            content.append({
-                "type": "text",
-                "text": f"（这是视频第 {best_sec} 秒的画面）"
-            })
+            # GLM-4V-Flash 只支持单图，把多帧画面拼接成一张网格图，一次看清多个时刻
+            try:
+                from PIL import Image
+                import io, math
+                imgs = []
+                for sec, b64 in frames[:6]:
+                    img = Image.open(io.BytesIO(base64.b64decode(b64)))
+                    img = img.convert("RGB")
+                    # 统一尺寸
+                    img = img.resize((480, 270))
+                    imgs.append((sec, img))
+                if len(imgs) > 1:
+                    cols = 3
+                    rows = math.ceil(len(imgs) / cols)
+                    canvas = Image.new("RGB", (cols * 480, rows * 270), (0, 0, 0))
+                    for i, (sec, img) in enumerate(imgs):
+                        r, c = divmod(i, cols)
+                        canvas.paste(img, (c * 480, r * 270))
+                    buf = io.BytesIO()
+                    canvas.save(buf, format="JPEG", quality=80)
+                    combined_b64 = base64.b64encode(buf.getvalue()).decode()
+                    sec_labels = "、".join([f"{s}s" for s, _ in imgs])
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{combined_b64}"}
+                    })
+                    content.append({
+                        "type": "text",
+                        "text": f"（这是视频 {sec_labels} 这 {len(imgs)} 个时刻的画面，从左到右、从上到下排列）"
+                    })
+                else:
+                    sec, b64 = imgs[0]
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
+                    })
+                    content.append({
+                        "type": "text",
+                        "text": f"（这是视频第 {sec} 秒的画面）"
+                    })
+            except Exception as e:
+                # 拼接失败则退回单帧
+                logger.warning(f"[BiliAgent] 多帧拼接失败，退回单帧: {e}")
+                best_sec, best_b64 = frames[len(frames)//2]
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{best_b64}"}
+                })
+                content.append({
+                    "type": "text",
+                    "text": f"（这是视频第 {best_sec} 秒的画面）"
+                })
 
             content.append({
                 "type": "text",
-                "text": "请像朋友分享一样告诉我这视频画面里发生了什么，画面里有什么、人物在做什么、场景怎么样。不用太正式，就像天依在跟你聊她看到的东西。"
+                "text": "请像朋友分享一样告诉我这视频画面里发生了什么，画面里有什么、人物在做什么、场景怎么样、颜色和氛围如何。注意看看画面中有没有让你觉得特别或感动的地方。不用太正式，就像天依在跟你聊她看到的东西——越生动越好，越有感情越好。"
             })
 
             import httpx
@@ -2726,8 +3857,8 @@ class BiliAgentPlugin(Star):
             time_points = await self._pick_interesting_times(title, desc, dm_list, hotspots)
             # 确保不超过视频时长
             time_points = [max(1, min(t, duration-2)) for t in time_points]
-            # 去重
-            time_points = list(dict.fromkeys(time_points))[:3]
+            # 去重（升级：多抽几帧，看得更透彻）
+            time_points = list(dict.fromkeys(time_points))[:6]
 
             # 5. 下载视频 + 抽帧
             frames = await self._download_and_extract_frames(bvid, cid, time_points)

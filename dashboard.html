@@ -59,6 +59,7 @@ body { background: #1c1c1e; color: #f5f5f7; }
     <button class="tab-btn active" onclick="showTab('browse')" style="background:#00a1d6;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer">📚 浏览记录</button>
     <button class="tab-btn" onclick="showTab('watch')" style="background:#fb7299;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer">🎬 一起看</button>
     <button class="tab-btn" onclick="showTab('memory')" style="background:#34c759;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer">🧠 记忆库</button>
+    <button class="tab-btn" onclick="showTab('graph')" style="background:#8e5bff;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer">🗂️ 观感图谱</button>
   </div>
 
     <h1>🎬 天依的B站小窝</h1>
@@ -101,6 +102,26 @@ body { background: #1c1c1e; color: #f5f5f7; }
       <button onclick="loadMemory()" style="background:#34c759;color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:12px;cursor:pointer">🔄 刷新记忆</button>
     </div>
   </div>
+
+  <!-- 观感图谱区域 -->
+  <div id="graph-section" class="section" style="display:none">
+    <h2>🗂️ 天依的观感图谱</h2>
+    <p style="color:#86868b;font-size:13px;margin-bottom:12px">这是天依看过的视频观感记录，共 <b id="graph-total">0</b> 张卡片～</p>
+    <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
+      <input id="graph-search" placeholder="搜标题 / UP主 / 标签..." style="flex:1;min-width:180px;padding:8px 10px;border:1px solid #d2d2d7;border-radius:8px;font-size:13px" />
+      <button onclick="loadGraph(1)" style="background:#8e5bff;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer">🔍 搜索</button>
+      <button onclick="document.getElementById('graph-search').value='';loadGraph(1)" style="background:#86868b;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer">重置</button>
+    </div>
+    <div id="graph-list" style="max-height:520px;overflow-y:auto">
+      <div class="loading">加载中...</div>
+    </div>
+    <div id="graph-pager" style="display:flex;justify-content:center;gap:8px;margin-top:14px;align-items:center;flex-wrap:wrap">
+      <button onclick="loadGraph(GP-1)" id="gp-prev" style="background:#f0f0f0;border:none;border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer">‹ 上一页</button>
+      <span id="gp-info" style="font-size:13px;color:#86868b">第 1 / 1 页</span>
+      <button onclick="loadGraph(GP+1)" id="gp-next" style="background:#f0f0f0;border:none;border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer">下一页 ›</button>
+    </div>
+  </div>
+
 <div class="section">
     <h2>🎯 兴趣偏好</h2>
     <div id="prefs">
@@ -204,6 +225,7 @@ function showTab(tab) {
   document.getElementById('video-list').style.display = 'none';
   document.getElementById('watch-section').style.display = 'none';
   document.getElementById('memory-section').style.display = 'none';
+  document.getElementById('graph-section').style.display = 'none';
   if (tab === 'browse') {
     document.getElementById('video-list').style.display = 'block';
     document.querySelectorAll('.tab-btn')[0].style.opacity = '1';
@@ -214,6 +236,10 @@ function showTab(tab) {
     document.getElementById('memory-section').style.display = 'block';
     document.querySelectorAll('.tab-btn')[2].style.opacity = '1';
     loadMemory();
+  } else if (tab === 'graph') {
+    document.getElementById('graph-section').style.display = 'block';
+    document.querySelectorAll('.tab-btn')[3].style.opacity = '1';
+    loadGraph(1);
   }
 }
 
@@ -322,6 +348,57 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   }
 });
+
+// ===== 观感图谱 =====
+let GP = 1;
+const GP_SIZE = 10;
+async function loadGraph(page) {
+  if (!page || page < 1) page = 1;
+  GP = page;
+  const el = document.getElementById('graph-list');
+  el.innerHTML = '<div class="loading">加载中...</div>';
+  const q = document.getElementById('graph-search').value.trim();
+  try {
+    const resp = await fetch(`${API}/graph?page=${page}&size=${GP_SIZE}&q=${encodeURIComponent(q)}`);
+    const data = await resp.json();
+    if (data.status !== 'ok') {
+      el.innerHTML = `<div class="empty-state"><p>加载失败: ${data.message || '未知错误'}</p></div>`;
+      return;
+    }
+    const d = data.data;
+    document.getElementById('graph-total').textContent = d.total;
+    document.getElementById('gp-info').textContent = `第 ${d.page} / ${d.pages} 页 · 共 ${d.total} 条`;
+    document.getElementById('gp-prev').disabled = d.page <= 1;
+    document.getElementById('gp-next').disabled = d.page >= d.pages;
+    if (!d.cards.length) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">🗂️</div><p>图谱里还没有相关记录呢～</p></div>';
+      return;
+    }
+    el.innerHTML = d.cards.map(c => {
+      const tags = (c.tags || '').split(/[,，]/).filter(Boolean).map(t => `<span class="tag" style="margin-bottom:2px">${escapeHtml(t.trim())}</span>`).join('');
+      const time = (c.created_at || '').replace('T', ' ').slice(0, 16);
+      return `<div class="video-item">
+        <div class="video-info">
+          <div class="video-title">${escapeHtml(c.title || '(无标题)')}</div>
+          <div class="video-meta">
+            <span>👤 ${escapeHtml(c.author || '未知UP')}</span>
+            <span class="video-score">⭐ ${c.score || '-'}</span>
+            <span>🕐 ${time || ''}</span>
+          </div>
+          ${tags ? `<div style="margin-top:4px">${tags}</div>` : ''}
+          ${c.highlight ? `<div class="video-meta" style="margin-top:3px;white-space:normal">💡 ${escapeHtml(String(c.highlight).slice(0, 90))}</div>` : ''}
+        </div>
+        <a class="video-link" href="https://www.bilibili.com/video/${c.bvid}" target="_blank" style="white-space:nowrap;align-self:center">去观看 ›</a>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    el.innerHTML = `<div class="empty-state"><p>加载失败: ${escapeHtml(e.message)}</p></div>`;
+  }
+}
+function escapeHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+document.getElementById('graph-search').addEventListener('keypress', function(e) { if (e.key === 'Enter') loadGraph(1); });
 
 </script>
 </body>
